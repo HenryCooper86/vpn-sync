@@ -1,0 +1,530 @@
+#!/bin/bash
+# vpn-sync — manage OpenVPN + WireGuard servers (Nyr road-warrior installs) from this Mac.
+#
+# Sync and devices:
+#   vpn-sync [server...]                  find each server, fix its IP in the profiles,
+#                                         copy profiles to ~/Desktop/<server>-<ip>/
+#   vpn-sync --check [server...]          report what would change; touch nothing
+#   vpn-sync --ip A.B.C.D <server>        use this address for the server
+#   vpn-sync --add NAMES <server>         create devices (comma separated), then sync
+#   vpn-sync --remove NAMES <server>      revoke/remove devices, then sync
+#   vpn-sync --no-apps ...                don't update OpenVPN Connect's saved profiles
+#
+# Live monitoring:
+#   vpn-sync status <server>              who is connected now (one snapshot)
+#   vpn-sync watch <server> [--interval N]  stream a snapshot every N seconds (default 3)
+#
+# Servers:
+#   vpn-sync server list
+#   vpn-sync server hostkey --host H [--port N] | --jump SERVER --private-ip IP
+#   vpn-sync server add NAME --host H [--user U] [--key FILE.pem] [--port N]
+#                           [--jump SERVER --private-ip IP] [--region R] [--hostkey-line LINE]
+#   vpn-sync server edit NAME [--host H] [--user U] [--key FILE.pem] [--port N]
+#                           [--jump SERVER|none] [--private-ip IP] [--region R]
+#   vpn-sync server remove NAME
+#   vpn-sync server probe NAME            what's installed (KEY=VALUE lines)
+#   vpn-sync server install NAME [--openvpn-proto tcp|udp] [--openvpn-port N]
+#                           [--wireguard-port N] [--dns 1-7] [--client NAME]
+#                           [--no-openvpn] [--no-wireguard]
+#       installs OpenVPN/WireGuard if missing (keeps existing installs), plus the
+#       server tools; then syncs.
+#
+# Servers are found via --ip, the AWS CLI (if set up), the last known IP, the
+# configured host, a jump server, then VPN tunnel addresses. Every server's SSH host
+# key is pinned in ~/.config/vpn-sync/known_hosts. Written for macOS /bin/bash 3.2.
+set -euo pipefail
+
+CONFIG_DIR="${VPN_SYNC_CONFIG_DIR:-$HOME/.config/vpn-sync}"
+KNOWN_HOSTS="$CONFIG_DIR/known_hosts"
+KEYS_DIR="$CONFIG_DIR/keys"
+BUNDLE_DIR="${VPN_SYNC_BUNDLE:-$HOME/.local/share/vpn-sync/server}"
+OVPN_CONNECT_PROFILES="$HOME/Library/Application Support/OpenVPN Connect/profiles"
+IPV4_RE='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+HOST_RE='^[A-Za-z0-9.-]{1,253}$'
+SERVER_RE='^[A-Za-z0-9_-]{1,40}$'
+NAME_RE='^[A-Za-z0-9_-]{1,15}$'
+
+die()  { printf 'vpn-sync: %s\n' "$*" >&2; exit 1; }
+info() { printf '%s\n' "$*"; }
+slug() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
+
+STAGES=""
+cleanup() { local s; for s in $STAGES; do rm -rf "$s"; done; }
+trap cleanup EXIT
+mkdir -p "$CONFIG_DIR" "$KEYS_DIR"; chmod 700 "$CONFIG_DIR" "$KEYS_DIR"
+touch "$KNOWN_HOSTS"; chmod 600 "$KNOWN_HOSTS"
+
+# ---------------------------------------------------------------- server config
+
+load_server() { # sets S_* globals for server $1
+	local cfg="$CONFIG_DIR/$1.conf"
+	[ -f "$cfg" ] || die "no server named '$1' (see: vpn-sync server list)"
+	HOST="" SSH_USER=ubuntu SSH_KEY="" SSH_PORT=22 HOST_ALIAS="" JUMP="" PRIVATE_IP=""
+	TUNNEL_IPS="10.8.0.1 10.7.0.1" DEST_PARENT="$HOME/Desktop" LIGHTSAIL_REGION="" LIGHTSAIL_INSTANCE="$1"
+	# shellcheck disable=SC1090
+	. "$cfg"
+	S_NAME="$1" S_HOST="$HOST" S_USER="$SSH_USER" S_KEY="$SSH_KEY" S_PORT="$SSH_PORT"
+	S_ALIAS="${HOST_ALIAS:-$(slug "$1")}" S_JUMP="$JUMP" S_PRIVATE_IP="$PRIVATE_IP"
+	S_TUNNELS="$TUNNEL_IPS" S_DEST="$DEST_PARENT" S_REGION="$LIGHTSAIL_REGION" S_INSTANCE="$LIGHTSAIL_INSTANCE"
+	S_STATE="$CONFIG_DIR/$1.last-ip"
+	S_LAST=""; [ -f "$S_STATE" ] && S_LAST=$(cat "$S_STATE")
+	[ -n "$S_KEY" ] || die "$cfg: SSH_KEY is not set"
+	[ -f "$S_KEY" ] || die "SSH key for $1 not found: $S_KEY"
+	return 0
+}
+
+write_server() { # write_server NAME (uses W_* globals)
+	local cfg="$CONFIG_DIR/$1.conf" tmp
+	tmp=$(mktemp "$CONFIG_DIR/.$1.XXXXXX")
+	{
+		echo "# vpn-sync server config (edit with: vpn-sync server edit $1)"
+		echo "HOST=$W_HOST"
+		echo "SSH_USER=$W_USER"
+		echo "SSH_KEY=\"$W_KEY\""
+		echo "SSH_PORT=$W_PORT"
+		echo "HOST_ALIAS=$W_ALIAS"
+		[ -n "$W_JUMP" ] && echo "JUMP=$W_JUMP"
+		[ -n "$W_PRIVATE_IP" ] && echo "PRIVATE_IP=$W_PRIVATE_IP"
+		[ -n "$W_TUNNELS" ] && echo "TUNNEL_IPS=\"$W_TUNNELS\""
+		echo "DEST_PARENT=\"$W_DEST\""
+		[ -n "$W_REGION" ] && echo "LIGHTSAIL_REGION=$W_REGION"
+		echo "LIGHTSAIL_INSTANCE=$W_INSTANCE"
+	} > "$tmp"
+	chmod 600 "$tmp"; mv "$tmp" "$cfg"
+}
+
+import_key() { # import_key SERVER FILE -> prints stored path
+	local src="$1" dest="$KEYS_DIR/$2.pem"
+	[ -f "$src" ] || die "key file not found: $src"
+	grep -q "PRIVATE KEY" "$src" || die "$src doesn't look like a private key (.pem / OpenSSH)"
+	if [ "$src" != "$dest" ]; then cp "$src" "$dest"; fi
+	chmod 600 "$dest"
+	ssh-keygen -y -f "$dest" >/dev/null 2>&1 || die "$src can't be read (passphrase-protected keys aren't supported)"
+	printf '%s' "$dest"
+}
+
+# ---------------------------------------------------------------- ssh plumbing
+
+base_ssh_opts() { # for the loaded server; prints nothing, sets SSH_OPTS array
+	SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=7 -o IdentitiesOnly=yes -i "$S_KEY" -p "$S_PORT"
+		-o HostKeyAlias="$S_ALIAS" -o UserKnownHostsFile="$KNOWN_HOSTS" -o StrictHostKeyChecking=yes
+		-o ServerAliveInterval=20 -o LogLevel=ERROR)
+}
+
+jump_proxy() { # jump_proxy JUMPSERVER -> ProxyCommand string through that server's best address
+	local j="$1" addr
+	( load_server "$j"
+	  addr="$S_LAST"; [ -n "$addr" ] || addr="$S_HOST"
+	  [ -n "$addr" ] || exit 1
+	  printf 'ssh -o BatchMode=yes -o ConnectTimeout=7 -o IdentitiesOnly=yes -i %s -p %s -o HostKeyAlias=%s -o UserKnownHostsFile=%s -o StrictHostKeyChecking=yes -o LogLevel=ERROR -W %%h:%%p %s@%s' \
+		"$S_KEY" "$S_PORT" "$S_ALIAS" "$KNOWN_HOSTS" "$S_USER" "$addr" )
+}
+
+# ssh_run MODE ADDR CMD...   MODE: direct | jump
+ssh_run() {
+	local mode="$1" addr="$2"; shift 2
+	base_ssh_opts
+	# SSH_EXEC=1 replaces this process with ssh, so stopping vpn-sync stops the connection
+	local ex=""; [ "${SSH_EXEC:-0}" = 1 ] && ex=exec
+	if [ "$mode" = jump ]; then
+		local proxy; proxy=$(jump_proxy "$S_JUMP") || return 255
+		$ex ssh "${SSH_OPTS[@]}" -o ProxyCommand="$proxy" "$S_USER@$addr" "$@"
+	else
+		$ex ssh "${SSH_OPTS[@]}" "$S_USER@$addr" "$@"
+	fi
+}
+
+sudo_prefix() { [ "$S_USER" = root ] && echo "" || echo "sudo -n "; }
+
+# connect: sets VIA_MODE/VIA_ADDR to the first route that answers with the pinned key
+connect() {
+	local forced="$1" cands="" c mode addr tried="" aws_ip=""
+	if [ -n "$forced" ]; then
+		cands="direct:$forced"
+	else
+		if command -v aws >/dev/null 2>&1 && [ -n "$S_REGION" ]; then
+			aws_ip=$(aws lightsail get-instance --region "$S_REGION" --instance-name "$S_INSTANCE" \
+				--query 'instance.publicIpAddress' --output text 2>/dev/null || true)
+			[[ "$aws_ip" =~ $IPV4_RE ]] && cands="$cands direct:$aws_ip"
+		fi
+		[ -n "$S_JUMP" ] && [ -n "$S_PRIVATE_IP" ] && cands="$cands jump:$S_PRIVATE_IP"
+		[ -n "$S_LAST" ] && cands="$cands direct:$S_LAST"
+		[ -n "$S_HOST" ] && cands="$cands direct:$S_HOST"
+		for c in $S_TUNNELS; do cands="$cands direct:$c"; done
+	fi
+	VIA_MODE="" VIA_ADDR=""
+	for c in $cands; do
+		case " $tried " in *" $c "*) continue ;; esac
+		tried="$tried $c"
+		mode="${c%%:*}" addr="${c#*:}"
+		if [ "$mode" = jump ]; then printf '  trying %-16s ' "$addr via $S_JUMP"; else printf '  trying %-16s ' "$addr"; fi
+		if ssh_run "$mode" "$addr" true </dev/null 2>/dev/null; then
+			info "ok"; VIA_MODE="$mode" VIA_ADDR="$addr"; return 0
+		fi
+		info "no answer"
+	done
+	return 1
+}
+
+remote() { ssh_run "$VIA_MODE" "$VIA_ADDR" "$@"; }
+
+prefix_stream() { # prefix server output; turn ADDED=/REMOVED= markers into readable lines
+	local line
+	while IFS= read -r line; do
+		case "$line" in
+			ADDED=*)   info "  added device: ${line#ADDED=}" ;;
+			REMOVED=*) info "  removed device: ${line#REMOVED=}" ;;
+			*)         info "  server: $line" ;;
+		esac
+	done
+}
+
+# ---------------------------------------------------------------- sync
+
+opt_ip="" opt_check=0 opt_apps=1 opt_add="" opt_remove="" opt_failed=0
+
+add_names() { # add_names <var> <list>
+	local var="$1" n list
+	list=$(printf '%s' "$2" | tr ', \n' '   ')
+	[ -n "${list// /}" ] || die "--add/--remove needs at least one name"
+	for n in $list; do
+		[[ "$n" =~ $NAME_RE ]] || die "invalid device name '$n': use 1-15 letters, digits, _ or -"
+		eval "$var=\"\$$var $n\""
+	done
+}
+
+sync_server() {
+	load_server "$1"
+	info "== $S_NAME"
+	if ! connect "$opt_ip"; then
+		info "  ! could not reach $S_NAME; nothing changed"
+		info "    (if this Mac is connected to $S_NAME's VPN on an old address, disconnect it first)"
+		return 1
+	fi
+	local sudo; sudo=$(sudo_prefix)
+	local out
+	if ! out=$(remote "${sudo}/usr/local/sbin/vpn-endpoint-sync$([ $opt_check -eq 1 ] && echo ' --dry-run')" 2>&1 </dev/null); then
+		printf '%s\n' "$out" | sed 's/^/  server: /'
+		info "  ! server tools aren't installed or failed (run: vpn-sync server install $S_NAME)"
+		return 1
+	fi
+	printf '%s\n' "$out" | grep -v '^ENDPOINT=' | sed 's/^/  server: /'
+	local ip; ip=$(printf '%s\n' "$out" | sed -n 's/^ENDPOINT=//p' | tail -1)
+	[[ "$ip" =~ $IPV4_RE ]] || { info "  ! server did not report its IP"; return 1; }
+
+	local dest="$S_DEST/$S_NAME-$ip" old_dir="" d
+	for d in "$S_DEST/$S_NAME"-*; do
+		[ -d "$d" ] && [ "$d" != "$dest" ] && [[ "${d##*/$S_NAME-}" =~ $IPV4_RE ]] && old_dir="$d"
+	done
+	local old_ip="${old_dir##*/$S_NAME-}"
+	[ -z "$old_ip" ] && [ -n "$S_LAST" ] && [ "$S_LAST" != "$ip" ] && old_ip="$S_LAST"
+
+	if [ $opt_check -eq 1 ]; then
+		info "  current IP: $ip"
+		if [ -n "$old_dir" ]; then info "  would rename $old_dir -> $dest and refresh profiles"
+		elif [ -d "$dest" ]; then info "  would refresh profiles in $dest"
+		else info "  would create $dest"; fi
+		return 0
+	fi
+
+	if [ -n "$opt_add$opt_remove" ]; then
+		local tool="vpn-add-client" names="$opt_add" verb="add"
+		[ -n "$opt_remove" ] && tool="vpn-remove-client" names="$opt_remove" verb="remove"
+		if ! remote "${sudo}/usr/local/sbin/$tool $names" 2>&1 </dev/null | prefix_stream; then
+			info "  ! could not $verb all devices; syncing what changed"
+			opt_failed=1
+		fi
+	fi
+
+	local stage; stage=$(mktemp -d "${TMPDIR:-/tmp}/vpn-sync.XXXXXX"); STAGES="$STAGES $stage"
+	remote "${sudo}/usr/local/sbin/vpn-export-profiles" </dev/null | tar xzf - -C "$stage" \
+		|| { info "  ! could not download profiles"; return 1; }
+	mkdir -p "$stage/OpenVPN" "$stage/WireGuard"
+	local n_ovpn n_wg
+	n_ovpn=$(ls "$stage/OpenVPN" | grep -c '\.ovpn$' || true)
+	n_wg=$(ls "$stage/WireGuard" | grep -c '\.conf$' || true)
+
+	if [ -n "$old_dir" ] && [ ! -e "$dest" ]; then
+		mv "$old_dir" "$dest"; info "  renamed ${old_dir##*/} -> ${dest##*/}"
+	fi
+	mkdir -p "$dest"; chmod 700 "$dest"
+	rm -rf "$dest/OpenVPN" "$dest/WireGuard"
+	mv "$stage/OpenVPN" "$stage/WireGuard" "$dest/"
+	chmod 600 "$dest"/OpenVPN/* "$dest"/WireGuard/* 2>/dev/null || true
+	info "  profiles: $n_ovpn OpenVPN, $n_wg WireGuard -> $dest"
+
+	if [ $opt_apps -eq 1 ] && [ -n "$old_ip" ] && [ "$old_ip" != "$ip" ] && [ -d "$OVPN_CONNECT_PROFILES" ]; then
+		local f bdir="$CONFIG_DIR/backups/$(date +%Y%m%d-%H%M%S)" old_re="${old_ip//./\\.}"
+		for f in "$OVPN_CONNECT_PROFILES"/*.ovpn; do
+			[ -f "$f" ] || continue
+			if grep -qE "^remote $old_re " "$f"; then
+				mkdir -p "$bdir"; cp -p "$f" "$bdir/"
+				sed -i '' -E "s/^remote $old_re /remote $ip /" "$f"
+				info "  OpenVPN Connect: updated ${f##*/} ($old_ip -> $ip; backup in $bdir)"
+			fi
+		done
+	fi
+	if [ -n "$old_ip" ] && [ "$old_ip" != "$ip" ]; then
+		info "  IP changed $old_ip -> $ip: re-import the WireGuard profiles (or edit Endpoint) on each device."
+	fi
+	echo "$ip" > "$S_STATE"
+	[ "$opt_failed" -eq 0 ]
+}
+
+# ---------------------------------------------------------------- server commands
+
+server_list() {
+	local f n
+	for f in "$CONFIG_DIR"/*.conf; do
+		[ -f "$f" ] || continue
+		n=$(basename "$f" .conf)
+		( load_server "$n" 2>/dev/null || true
+		  printf '%s\thost=%s\tlast_ip=%s\tuser=%s\tjump=%s\n' "$n" "${S_HOST:-}" "${S_LAST:-}" "${S_USER:-}" "${S_JUMP:-}" )
+	done
+}
+
+parse_server_opts() { # fills O_* from args; returns remaining positional in O_REST
+	O_HOST="" O_USER="" O_KEY="" O_PORT="" O_JUMP="-" O_PRIVATE_IP="" O_REGION="" O_HOSTKEY="" O_REST=""
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--host) O_HOST="${2:-}"; [[ "$O_HOST" =~ $HOST_RE ]] || die "--host: not a hostname or IP"; shift ;;
+			--user) O_USER="${2:-}"; [[ "$O_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "--user: invalid user name"; shift ;;
+			--key) O_KEY="${2:-}"; shift ;;
+			--port) O_PORT="${2:-}"; [[ "$O_PORT" =~ ^[0-9]{1,5}$ ]] || die "--port: invalid"; shift ;;
+			--jump) O_JUMP="${2:-}"; shift ;;
+			--private-ip) O_PRIVATE_IP="${2:-}"; [[ "$O_PRIVATE_IP" =~ $IPV4_RE ]] || die "--private-ip: not an IPv4 address"; shift ;;
+			--region) O_REGION="${2:-}"; [[ "$O_REGION" =~ ^[a-z0-9-]{0,30}$ ]] || die "--region: invalid"; shift ;;
+			--hostkey-line) O_HOSTKEY="${2:-}"; shift ;;
+			-*) die "unknown option: $1" ;;
+			*) O_REST="$O_REST $1" ;;
+		esac
+		shift
+	done
+}
+
+# hostkey_scan: prints "HOSTKEY=<type> <key>" and "FINGERPRINT=<sha256>" for --host or --jump/--private-ip
+server_hostkey() {
+	parse_server_opts "$@"
+	local port="${O_PORT:-22}" line
+	if [ "$O_JUMP" != "-" ] && [ -n "$O_JUMP" ]; then
+		[ -n "$O_PRIVATE_IP" ] || die "--jump needs --private-ip"
+		load_server "$O_JUMP"; connect "" >/dev/null || die "can't reach jump server $O_JUMP"
+		line=$(remote "ssh-keyscan -T 8 -t ed25519 -p $port $O_PRIVATE_IP 2>/dev/null" </dev/null | grep -v '^#' | head -1)
+	else
+		[ -n "$O_HOST" ] || die "need --host (or --jump with --private-ip)"
+		line=$(ssh-keyscan -T 8 -t ed25519 -p "$port" "$O_HOST" 2>/dev/null | grep -v '^#' | head -1)
+	fi
+	[ -n "$line" ] || die "no SSH host key received (is port $port open and the address right?)"
+	local key="${line#* }"
+	printf 'HOSTKEY=%s\n' "$key"
+	printf 'FINGERPRINT=%s\n' "$(printf 'x %s\n' "$key" | ssh-keygen -lf - | awk '{print $2}')"
+}
+
+pin_hostkey() { # pin_hostkey ALIAS "type key"
+	local alias="$1" key="$2" tmp
+	[[ "$key" =~ ^(ssh-ed25519|ecdsa-sha2-nistp256|ssh-rsa)\ [A-Za-z0-9+/=]+$ ]] || die "malformed host key"
+	tmp=$(mktemp "$CONFIG_DIR/.kh.XXXXXX")
+	grep -v "^$alias " "$KNOWN_HOSTS" > "$tmp" || true
+	echo "$alias $key" >> "$tmp"
+	chmod 600 "$tmp"; mv "$tmp" "$KNOWN_HOSTS"
+}
+
+server_add() {
+	local name="$1"; shift
+	[[ "$name" =~ $SERVER_RE ]] || die "server name: use 1-40 letters, digits, _ or -"
+	[ -f "$CONFIG_DIR/$name.conf" ] && die "server '$name' already exists (use: vpn-sync server edit $name)"
+	parse_server_opts "$@"
+	[ "$O_JUMP" = "-" ] && O_JUMP=""
+	[ -n "$O_HOST$O_PRIVATE_IP" ] || die "need --host (public IP or hostname)"
+	[ -z "$O_JUMP" ] || [ -n "$O_PRIVATE_IP" ] || die "--jump needs --private-ip"
+	[ -z "$O_JUMP" ] || [ -f "$CONFIG_DIR/$O_JUMP.conf" ] || die "jump server '$O_JUMP' isn't configured"
+	[ -n "$O_KEY" ] || die "need --key (the server's private key, e.g. the Lightsail .pem)"
+	local hk="$O_HOSTKEY"
+	if [ -z "$hk" ]; then
+		local scan
+		if [ -n "$O_JUMP" ]; then scan=$(server_hostkey --jump "$O_JUMP" --private-ip "$O_PRIVATE_IP" --port "${O_PORT:-22}")
+		else scan=$(server_hostkey --host "$O_HOST" --port "${O_PORT:-22}"); fi
+		hk=$(printf '%s\n' "$scan" | sed -n 's/^HOSTKEY=//p')
+		info "Host key fingerprint: $(printf '%s\n' "$scan" | sed -n 's/^FINGERPRINT=//p')"
+		if [ -t 0 ]; then
+			printf 'Trust this server? [y/N] '; local a; read -r a
+			[[ "$a" =~ ^[yY] ]] || die "not added"
+		else
+			die "not interactive: confirm the fingerprint and pass --hostkey-line"
+		fi
+	fi
+	W_KEY=$(import_key "$O_KEY" "$name")
+	W_HOST="$O_HOST" W_USER="${O_USER:-ubuntu}" W_PORT="${O_PORT:-22}" W_ALIAS=$(slug "$name")
+	W_JUMP="$O_JUMP" W_PRIVATE_IP="$O_PRIVATE_IP" W_TUNNELS="" W_DEST="$HOME/Desktop"
+	W_REGION="$O_REGION" W_INSTANCE="$name"
+	pin_hostkey "$W_ALIAS" "$hk"
+	write_server "$name"
+	[[ "$O_HOST" =~ $IPV4_RE ]] && echo "$O_HOST" > "$CONFIG_DIR/$name.last-ip"
+	info "added server $name"
+	load_server "$name"
+	connect "" || { info "  ! saved, but couldn't log in yet (check the user name, key and firewall)"; return 1; }
+	remote "$(sudo_prefix)true" </dev/null 2>/dev/null || { info "  ! logged in, but $W_USER can't use sudo without a password"; return 1; }
+	info "  login ok"
+}
+
+server_edit() {
+	local name="$1"; shift
+	load_server "$name"
+	parse_server_opts "$@"
+	W_HOST="${O_HOST:-$S_HOST}" W_USER="${O_USER:-$S_USER}" W_PORT="${O_PORT:-$S_PORT}" W_ALIAS="$S_ALIAS"
+	W_JUMP="$S_JUMP"; [ "$O_JUMP" != "-" ] && W_JUMP="$O_JUMP"; [ "$W_JUMP" = none ] && W_JUMP=""
+	[ -z "$W_JUMP" ] || [ -f "$CONFIG_DIR/$W_JUMP.conf" ] || die "jump server '$W_JUMP' isn't configured"
+	[ "$W_JUMP" != "$name" ] || die "a server can't jump through itself"
+	W_PRIVATE_IP="${O_PRIVATE_IP:-$S_PRIVATE_IP}"
+	W_TUNNELS="$S_TUNNELS" W_DEST="$S_DEST" W_REGION="${O_REGION:-$S_REGION}" W_INSTANCE="$S_INSTANCE"
+	W_KEY="$S_KEY"; [ -n "$O_KEY" ] && W_KEY=$(import_key "$O_KEY" "$name")
+	[ -n "$O_HOSTKEY" ] && pin_hostkey "$W_ALIAS" "$O_HOSTKEY"
+	write_server "$name"
+	if [ -n "$O_HOST" ] && [[ "$O_HOST" =~ $IPV4_RE ]]; then echo "$O_HOST" > "$CONFIG_DIR/$name.last-ip"; fi
+	info "updated server $name"
+}
+
+server_remove() {
+	local name="$1"
+	[ -f "$CONFIG_DIR/$name.conf" ] || die "no server named '$name'"
+	local f
+	for f in "$CONFIG_DIR"/*.conf; do
+		[ "$f" = "$CONFIG_DIR/$name.conf" ] && continue
+		grep -qx "JUMP=$name" "$f" && die "$(basename "$f" .conf) connects through $name; change that first"
+	done
+	load_server "$name" 2>/dev/null || true
+	local alias="${S_ALIAS:-$(slug "$name")}" tmp
+	tmp=$(mktemp "$CONFIG_DIR/.kh.XXXXXX"); grep -v "^$alias " "$KNOWN_HOSTS" > "$tmp" || true
+	chmod 600 "$tmp"; mv "$tmp" "$KNOWN_HOSTS"
+	rm -f "$CONFIG_DIR/$name.conf" "$CONFIG_DIR/$name.last-ip" "$KEYS_DIR/$name.pem"
+	info "removed server $name from this Mac (the server itself and its Desktop folder are untouched)"
+}
+
+PROBE_SCRIPT='
+. /etc/os-release 2>/dev/null && echo "OS=$PRETTY_NAME"
+if [ -f /etc/openvpn/server/server.conf ]; then
+  echo "OPENVPN=$(awk '"'"'/^proto /{p=$2; sub("-server","",p)} /^port /{n=$2} END{print p" "n}'"'"' /etc/openvpn/server/server.conf)"
+else echo "OPENVPN=none"; fi
+if [ -f /etc/wireguard/wg0.conf ]; then
+  echo "WIREGUARD=udp $(awk -F" = " "/^ListenPort/{print \$2}" /etc/wireguard/wg0.conf)"
+else echo "WIREGUARD=none"; fi
+if [ -x /usr/local/sbin/vpn-export-profiles ] && [ -f /usr/local/lib/vpn-sync/common.sh ] && [ -f /etc/vpn-sync.conf ]; then echo "TOOLS=installed"; else echo "TOOLS=none"; fi
+command -v apt-get >/dev/null && echo "PKG=apt" || { command -v dnf >/dev/null && echo "PKG=dnf" || echo "PKG=unsupported"; }
+echo "PUBLIC_IP=$(curl -4 -fsS -m 6 https://checkip.amazonaws.com 2>/dev/null | tr -d "[:space:]")"
+'
+
+server_probe() {
+	load_server "$1"
+	connect "" >&2 || die "can't reach $1"
+	local sudo; sudo=$(sudo_prefix)
+	remote "${sudo}true" </dev/null 2>/dev/null || { echo "SUDO=no"; die "$S_USER can't use sudo without a password"; }
+	echo "SUDO=ok"
+	echo "VIA=$VIA_MODE:$VIA_ADDR"
+	printf '%s' "$PROBE_SCRIPT" | remote "${sudo}bash -s"
+}
+
+server_install() {
+	local name="$1"; shift
+	local args="" a
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--openvpn-proto) [[ "${2:-}" =~ ^(tcp|udp)$ ]] || die "--openvpn-proto: tcp or udp"; args="$args $1 $2"; shift ;;
+			--openvpn-port|--wireguard-port) [[ "${2:-}" =~ ^[0-9]{1,5}$ ]] || die "$1: invalid port"; args="$args $1 $2"; shift ;;
+			--dns) [[ "${2:-}" =~ ^[1-7]$ ]] || die "--dns: 1-7"; args="$args $1 $2"; shift ;;
+			--client) [[ "${2:-}" =~ $NAME_RE ]] || die "--client: 1-15 letters, digits, _ or -"; args="$args $1 $2"; shift ;;
+			--no-openvpn|--no-wireguard) args="$args $1" ;;
+			*) die "unknown option: $1" ;;
+		esac
+		shift
+	done
+	[ -f "$BUNDLE_DIR/install.sh" ] || die "server bundle missing at $BUNDLE_DIR"
+	load_server "$name"
+	info "== installing on $name"
+	connect "" || die "can't reach $name"
+	local sudo; sudo=$(sudo_prefix)
+	remote "${sudo}true" </dev/null 2>/dev/null || die "$S_USER can't use sudo without a password"
+	info "  uploading tools"
+	COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata -czf - -C "$BUNDLE_DIR" . | remote "rm -rf /tmp/vpn-sync-bundle && mkdir -m 700 /tmp/vpn-sync-bundle && tar xzf - -C /tmp/vpn-sync-bundle" \
+		|| die "upload failed"
+	info "  running installer (a fresh OpenVPN install takes a few minutes)"
+	local rc=0
+	remote "${sudo}bash /tmp/vpn-sync-bundle/install.sh$args; rc=\$?; rm -rf /tmp/vpn-sync-bundle; exit \$rc" </dev/null 2>&1 | prefix_stream || rc=1
+	[ $rc -eq 0 ] || die "install failed on $name"
+	info "  install finished"
+	sync_server "$name"
+}
+
+monitor() { # monitor once|watch SERVER [--interval N]
+	local mode="$1" name="${2:-}" interval=3
+	[ -n "$name" ] || die "usage: vpn-sync $mode <server>"
+	shift 2
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--interval) interval="${2:-}"; [[ "$interval" =~ ^[0-9]{1,3}$ ]] && [ "$interval" -ge 1 ] || die "--interval: 1-999 seconds"; shift ;;
+			*) die "unknown option: $1" ;;
+		esac
+		shift
+	done
+	load_server "$name"
+	connect "" >&2 || die "can't reach $name"
+	local sudo; sudo=$(sudo_prefix)
+	if [ "$mode" = status ]; then
+		remote "${sudo}/usr/local/sbin/vpn-status" </dev/null
+	else
+		echo "WATCHING	$name	$interval"
+		trap - EXIT
+		SSH_EXEC=1 remote "${sudo}/usr/local/sbin/vpn-status --watch $interval" </dev/null
+	fi
+}
+
+# ---------------------------------------------------------------- main
+
+case "${1:-}" in
+	status|watch) monitor "$@"; exit ;;
+esac
+
+if [ "${1:-}" = server ]; then
+	shift
+	sub="${1:-}"; shift || true
+	case "$sub" in
+		list) server_list ;;
+		hostkey) server_hostkey "$@" ;;
+		add) [ $# -ge 1 ] || die "usage: vpn-sync server add NAME --host H --key FILE"; server_add "$@" ;;
+		edit) [ $# -ge 1 ] || die "usage: vpn-sync server edit NAME [options]"; server_edit "$@" ;;
+		remove) [ $# -eq 1 ] || die "usage: vpn-sync server remove NAME"; server_remove "$1" ;;
+		probe) [ $# -eq 1 ] || die "usage: vpn-sync server probe NAME"; server_probe "$1" ;;
+		install) [ $# -ge 1 ] || die "usage: vpn-sync server install NAME [options]"; server_install "$@" ;;
+		*) die "unknown server command '$sub' (list, hostkey, add, edit, remove, probe, install)" ;;
+	esac
+	exit
+fi
+
+servers=()
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--ip) opt_ip="${2:-}"; [[ "$opt_ip" =~ $IPV4_RE ]] || die "--ip needs an IPv4 address"; shift ;;
+		--check|--dry-run) opt_check=1 ;;
+		--no-apps) opt_apps=0 ;;
+		--add) add_names opt_add "${2:-}"; shift ;;
+		--remove) add_names opt_remove "${2:-}"; shift ;;
+		-h|--help) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		-*) die "unknown option: $1 (see --help)" ;;
+		*) servers+=("$1") ;;
+	esac
+	shift
+done
+if [ ${#servers[@]} -eq 0 ]; then
+	for f in "$CONFIG_DIR"/*.conf; do [ -f "$f" ] && servers+=("$(basename "$f" .conf)"); done
+	[ ${#servers[@]} -gt 0 ] || die "no servers configured (see: vpn-sync server add)"
+fi
+if [ ${#servers[@]} -gt 1 ]; then
+	[ -n "$opt_ip" ] && die "--ip needs exactly one server name"
+	[ -n "$opt_add$opt_remove" ] && die "--add/--remove need exactly one server name"
+fi
+if [ -n "$opt_add$opt_remove" ]; then
+	[ $opt_check -eq 1 ] && die "--add/--remove can't be combined with --check"
+	[ -n "$opt_add" ] && [ -n "$opt_remove" ] && die "use --add and --remove in separate runs"
+fi
+rc=0
+for s in "${servers[@]}"; do sync_server "$s" || rc=1; done
+exit $rc

@@ -1,0 +1,9 @@
+[Unit]
+Description=Check VPN endpoint IP at boot and every 15 minutes
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=15min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# vpn-add-client — create one or more devices on every installed VPN (OpenVPN and/or
+# WireGuard, via the Nyr installers) plus a WireGuard QR code each.
+# Usage: vpn-add-client <name> [name...]     name: 1-15 of A-Z a-z 0-9 _ -
+# All names are checked before anything is created. Prints "ADDED=<name>" per device.
+# Exit codes: 0 ok, 64 bad name, 65 name already used, 70 installer failed, 71 no VPN.
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "${VPN_SYNC_LIB:-/usr/local/lib/vpn-sync}/common.sh"
+require_root
+[[ $# -gt 0 ]] || { echo "usage: vpn-add-client <name> [name...]" >&2; exit 64; }
+have_openvpn || have_wireguard || { echo "neither OpenVPN nor WireGuard is installed" >&2; exit 71; }
+
+seen=" " bad=0
+for name in "$@"; do
+	if [[ ! "$name" =~ $NAME_RE ]]; then
+		echo "invalid name '$name': use 1-15 letters, digits, _ or -" >&2; bad=64; continue
+	fi
+	case "$seen" in *" $name "*) echo "name '$name' is listed twice" >&2; bad=64; continue ;; esac
+	seen="$seen$name "
+	taken=()
+	[[ -e "$OVPN_PKI/issued/$name.crt" ]] && taken+=("OpenVPN")
+	grep -qx "# BEGIN_PEER $name" "$WG_CONF" 2>/dev/null && taken+=("WireGuard")
+	[[ -e "$OVPN_DIR/$name.ovpn" || -e "$WG_DIR/$name.conf" ]] && taken+=("profile files")
+	if [[ ${#taken[@]} -gt 0 ]]; then
+		echo "name '$name' is already used (${taken[*]})" >&2; [[ $bad -eq 0 ]] && bad=65
+	fi
+done
+[[ $bad -eq 0 ]] || { echo "nothing was created" >&2; exit $bad; }
+
+/usr/local/sbin/vpn-endpoint-sync >/dev/null   # new profiles get the current public IP
+
+ensure_backup_dir
+created=()
+for name in "$@"; do
+	log="$BACKUP_DIR/add-$name-$(date +%Y%m%d-%H%M%S).log"
+	what=()
+	if have_openvpn; then
+		if ! "$LIB_DIR/nyr-addclient.exp" "$OVPN_DIR/openvpn-install.sh" "$name" "$DNS_CHOICE" >>"$log" 2>&1 \
+			|| [[ ! -s "$OVPN_DIR/$name.ovpn" ]]; then
+			echo "OpenVPN: creating '$name' failed (log: $log)" >&2
+			[[ ${#created[@]} -gt 0 ]] && echo "created before the failure: ${created[*]}" >&2
+			exit 70
+		fi
+		chmod 600 "$OVPN_DIR/$name.ovpn"; what+=("OpenVPN")
+	fi
+	if have_wireguard; then
+		if ! "$LIB_DIR/nyr-addclient.exp" "$WG_DIR/wireguard-install.sh" "$name" "$DNS_CHOICE" >>"$log" 2>&1 \
+			|| [[ ! -s "$WG_DIR/$name.conf" ]]; then
+			echo "WireGuard: creating '$name' failed (log: $log)${what:+; its OpenVPN profile was kept}" >&2
+			[[ ${#created[@]} -gt 0 ]] && echo "created before the failure: ${created[*]}" >&2
+			exit 70
+		fi
+		qrencode -t PNG -s 8 -o "$WG_DIR/$name-wireguard-qr.png" < "$WG_DIR/$name.conf"
+		chmod 600 "$WG_DIR/$name.conf" "$WG_DIR/$name-wireguard-qr.png"; what+=("WireGuard")
+	fi
+	chmod 600 "$log"
+	created+=("$name")
+	echo "created $name (${what[*]})"
+	echo "ADDED=$name"
+done

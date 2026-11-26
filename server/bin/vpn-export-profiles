@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# vpn-export-profiles — write a tar.gz of all client profiles to stdout:
+#   OpenVPN/<name>.ovpn   WireGuard/<name>.conf   WireGuard/<name>-wireguard-qr.png
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "${VPN_SYNC_LIB:-/usr/local/lib/vpn-sync}/common.sh"
+require_root
+
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT
+chmod 700 "$stage"
+mkdir -p "$stage/OpenVPN" "$stage/WireGuard"
+while IFS= read -r f; do cp -p "$f" "$stage/OpenVPN/"; done < <(ovpn_profiles)
+while IFS= read -r f; do
+	cp -p "$f" "$stage/WireGuard/"
+	qr="${f%.conf}-wireguard-qr.png"
+	[[ -f "$qr" ]] && cp -p "$qr" "$stage/WireGuard/"
+done < <(wg_profiles)
+tar czf - -C "$stage" OpenVPN WireGuard

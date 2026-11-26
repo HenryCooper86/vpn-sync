@@ -1,0 +1,19 @@
+#!/usr/bin/expect -f
+# Remove client <name> through a Nyr installer's menu (option 2: revoke/remove).
+# Usage: nyr-remove.exp <script> <name>
+set script [lindex $argv 0]
+set name   [lindex $argv 1]
+set timeout 120
+set num ""
+spawn bash $script
+expect {
+  -re {Option: $}                              { send "2\r"; exp_continue }
+  -re "\[\r\n\] *(\[0-9\]+)\\) $name\[\r\n\]"  { set num $expect_out(1,string); exp_continue }
+  -re {Client: $}                              { if {$num eq ""} { puts "\n!! $name not listed"; exit 2 }; send "$num\r"; exp_continue }
+  -re {\[y/N\]: $}                             { send "y\r"; exp_continue }
+  -re {no existing clients}                    { puts "\n!! no clients"; exit 2 }
+  timeout                                      { puts "\n!! timed out"; exit 3 }
+  eof
+}
+lassign [wait] pid spawnid os_error status
+exit $status

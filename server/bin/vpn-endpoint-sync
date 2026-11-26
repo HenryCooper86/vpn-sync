@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# vpn-endpoint-sync — keep Nyr OpenVPN/WireGuard client configs pointed at this
+# server's current public IPv4 address, and keep a WireGuard QR code per profile.
+#
+# When the public IP differs from the configs, rewrites:
+#   client-common.txt (template for new OpenVPN clients), "# ENDPOINT" in wg0.conf
+#   (template for new WireGuard clients), and every client profile in OVPN_DIR/WG_DIR.
+# Server-side services are not touched: they listen on all addresses.
+#
+# Usage: vpn-endpoint-sync [--dry-run] [--ip A.B.C.D] [--print-ip]
+# Last line of output is always "ENDPOINT=<ip>" on success.
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "${VPN_SYNC_LIB:-/usr/local/lib/vpn-sync}/common.sh"
+
+dry_run=0 forced_ip="" print_only=0
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--dry-run) dry_run=1 ;;
+		--ip) forced_ip="${2:-}"; shift ;;
+		--print-ip) print_only=1 ;;
+		-h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+		*) echo "unknown option: $1" >&2; exit 64 ;;
+	esac
+	shift
+done
+require_root
+
+ipv4_re='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+detect_ip() {
+	local url ip
+	for _ in 1 2 3 4 5 6; do
+		for url in https://checkip.amazonaws.com https://api.ipify.org http://ip1.dynupdate.no-ip.com/; do
+			ip=$(curl -4 -fsS -m 5 "$url" 2>/dev/null | tr -d '[:space:]') || true
+			if [[ "$ip" =~ $ipv4_re ]]; then echo "$ip"; return 0; fi
+		done
+		sleep 5   # network may still be coming up at boot
+	done
+	return 1
+}
+
+if [[ -n "$forced_ip" ]]; then
+	[[ "$forced_ip" =~ $ipv4_re ]] || { echo "--ip: not an IPv4 address: $forced_ip" >&2; exit 64; }
+	new_ip=$forced_ip
+else
+	new_ip=$(detect_ip) || { echo "could not detect public IPv4 address" >&2; exit 69; }
+fi
+if [[ $print_only -eq 1 ]]; then echo "ENDPOINT=$new_ip"; exit 0; fi
+
+ovpn_files=() wg_files=()
+if [[ -f "$OVPN_TEMPLATE" ]]; then ovpn_files+=("$OVPN_TEMPLATE"); fi
+while IFS= read -r f; do ovpn_files+=("$f"); done < <(ovpn_profiles)
+while IFS= read -r f; do wg_files+=("$f"); done < <(wg_profiles)
+
+re_ip=${new_ip//./\\.}
+changed=()
+for f in ${ovpn_files[@]+"${ovpn_files[@]}"}; do
+	grep -qE '^remote ' "$f" && ! grep -qE "^remote $re_ip " "$f" && changed+=("$f")
+done
+for f in ${wg_files[@]+"${wg_files[@]}"}; do
+	grep -qE "^Endpoint = $re_ip:" "$f" || changed+=("$f")
+done
+if [[ -f "$WG_CONF" ]] && grep -q '^# ENDPOINT ' "$WG_CONF" && ! grep -qx "# ENDPOINT $new_ip" "$WG_CONF"; then
+	changed+=("$WG_CONF")
+fi
+
+# QR codes that are missing or older than their profile
+stale_qr=()
+if command -v qrencode >/dev/null; then
+	for f in ${wg_files[@]+"${wg_files[@]}"}; do
+		qr="${f%.conf}-wireguard-qr.png"
+		[[ ! -f "$qr" || "$f" -nt "$qr" ]] && stale_qr+=("$f")
+	done
+fi
+
+if [[ ${#changed[@]} -eq 0 ]]; then
+	echo "up to date: all configs use $new_ip"
+else
+	echo "public IP is $new_ip; ${#changed[@]} file(s) need updating:"
+	printf '  %s\n' "${changed[@]}"
+fi
+if [[ $dry_run -eq 1 ]]; then
+	[[ ${#changed[@]} -gt 0 ]] && echo "(dry run, nothing written)"
+	echo "ENDPOINT=$new_ip"; exit 0
+fi
+
+if [[ ${#changed[@]} -gt 0 ]]; then
+	ensure_backup_dir
+	bdir="$BACKUP_DIR/endpoint-$(date +%Y%m%d-%H%M%S)"
+	mkdir -p "$bdir"; chmod 700 "$bdir"
+	for f in "${changed[@]}"; do
+		cp -p "$f" "$bdir/$(basename "$(dirname "$f")")-$(basename "$f")"
+		sed -i -E \
+			-e "s/^remote [^ ]+ ([0-9]+)(.*)$/remote $new_ip \1\2/" \
+			-e "s/^Endpoint = [^:]+:([0-9]+)$/Endpoint = $new_ip:\1/" \
+			-e "s/^# ENDPOINT .*/# ENDPOINT $new_ip/" \
+			"$f"
+	done
+	echo "updated ${#changed[@]} file(s); backups in $bdir"
+	# every WireGuard QR is now stale
+	stale_qr=(${wg_files[@]+"${wg_files[@]}"})
+fi
+for f in ${stale_qr[@]+"${stale_qr[@]}"}; do
+	qr="${f%.conf}-wireguard-qr.png"
+	qrencode -t PNG -s 8 -o "$qr" < "$f" && chmod 600 "$qr"
+done
+[[ ${#stale_qr[@]} -gt 0 ]] && echo "refreshed ${#stale_qr[@]} WireGuard QR code(s)"
+mkdir -p /var/lib/vpn-sync && echo "$new_ip" > /var/lib/vpn-sync/endpoint
+echo "ENDPOINT=$new_ip"

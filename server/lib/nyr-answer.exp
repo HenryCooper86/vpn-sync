@@ -1,0 +1,30 @@
+#!/usr/bin/expect -f
+# Answer a Nyr installer's first-run questions.
+# Usage: nyr-answer.exp <script> <public_ip> <proto 1=UDP|2=TCP> <port> <dns_choice> <client>
+# (proto is ignored by the WireGuard installer, which has no protocol question)
+set script [lindex $argv 0]
+set pubip  [lindex $argv 1]
+set proto  [lindex $argv 2]
+set port   [lindex $argv 3]
+set dns    [lindex $argv 4]
+set client [lindex $argv 5]
+set timeout 180
+log_user 1
+spawn bash $script
+expect {
+  -re {Press any key to install Wget}            { send "y"; exp_continue }
+  -re {IPv4 address \[1\]: $}                    { send "\r"; exp_continue }
+  -re {Public IPv4 address / hostname[^:]*: $}   { send "$pubip\r"; exp_continue }
+  -re {IPv6 address \[1\]: $}                    { send "\r"; exp_continue }
+  -re {Protocol \[1\]: $}                        { send "$proto\r"; exp_continue }
+  -re {Port \[[0-9]+\]: $}                       { send "$port\r"; exp_continue }
+  -re {DNS server \[1\]: $}                      { send "$dns\r"; exp_continue }
+  -re {Name \[client\]: $}                       { send "$client\r"; exp_continue }
+  -re {automatic updates be enabled[^:]*: $}     { send "y\r"; exp_continue }
+  -re {Press any key to continue}                { send " "; set timeout 1800; exp_continue }
+  -re {invalid selection|Invalid input}          { puts "\n!! prompt rejected an answer"; exit 2 }
+  timeout                                        { puts "\n!! timed out waiting for output"; exit 3 }
+  eof
+}
+lassign [wait] pid spawnid os_error status
+exit $status

@@ -1,0 +1,8 @@
+[Unit]
+Description=Point VPN client configs at this server's current public IP
+Wants=network-online.target
+After=network-online.target openvpn-server@server.service wg-quick@wg0.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/vpn-endpoint-sync

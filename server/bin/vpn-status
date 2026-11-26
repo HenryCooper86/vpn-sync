@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# vpn-status — who is connected right now. Prints one snapshot, or one every N seconds
+# with --watch N (until the reader goes away).
+#
+# Snapshot format (tab separated):
+#   SNAPSHOT <now>
+#   OVPNTIME <epoch the OpenVPN status file was written>      (OpenVPN refreshes it every 60 s)
+#   OVPN  <name> <real ip> <vpn ip> <bytes rx> <bytes tx> <connected since>
+#   WG    <name> <endpoint ip|-> <vpn ip> <bytes rx> <bytes tx> <latest handshake, 0 = never>
+#   EVENT <epoch> openvpn <name> connected|disconnected <ip|->   (from the OpenVPN log, instant)
+#   END
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "${VPN_SYNC_LIB:-/usr/local/lib/vpn-sync}/common.sh"
+require_root
+
+interval=0
+[[ "${1:-}" == --watch ]] && { interval="${2:-5}"; [[ "$interval" =~ ^[0-9]+$ && $interval -ge 1 ]] || interval=5; }
+
+OVPN_STATUS=""
+for f in /run/openvpn-server/status-server.log /var/log/openvpn/openvpn-status.log /etc/openvpn/server/openvpn-status.log; do
+	[[ -f "$f" ]] && { OVPN_STATUS="$f"; break; }
+done
+
+wg_names() { # pubkey<TAB>name<TAB>vpn ip, from wg0.conf comments
+	[[ -f "$WG_CONF" ]] || return 0
+	awk '/^# BEGIN_PEER /{n=$3} /^PublicKey/{k=$3} /^AllowedIPs/{split($3,a,","); sub("/32","",a[1]); if(n!=""){print k"\t"n"\t"a[1]; n=""}}' "$WG_CONF"
+}
+
+snapshot() {
+	local now; now=$(date +%s)
+	printf 'SNAPSHOT\t%s\n' "$now"
+	if [[ -n "$OVPN_STATUS" ]]; then
+		awk -F, '
+			$1=="TIME" {print "OVPNTIME\t"$3}
+			$1=="CLIENT_LIST" && $2!="UNDEF" {ip=$3; sub(/:[0-9]+$/,"",ip); print "OVPN\t"$2"\t"ip"\t"$4"\t"$6"\t"$7"\t"$9}
+		' "$OVPN_STATUS"
+	fi
+	if [[ -f "$WG_CONF" ]] && command -v wg >/dev/null; then
+		local names; names=$(wg_names)
+		wg show wg0 dump 2>/dev/null | awk -F'\t' -v names="$names" '
+			BEGIN { n=split(names, L, "\n"); for(i=1;i<=n;i++){ split(L[i], f, "\t"); nm[f[1]]=f[2]; vip[f[1]]=f[3] } }
+			NR>1 { ep=$3; if(ep=="(none)") ep="-"; else sub(/:[0-9]+$/,"",ep); gsub(/^\[|\]$/,"",ep)
+			       name=($1 in nm)?nm[$1]:substr($1,1,8)
+			       print "WG\t"name"\t"ep"\t"vip[$1]"\t"$6"\t"$7"\t"$5 }'
+	fi
+}
+
+events_since() { # OpenVPN connect/disconnect lines from the journal after epoch $1
+	command -v journalctl >/dev/null || return 0
+	journalctl -u openvpn-server@server --since "@$1" -o short-unix --no-pager -q 2>/dev/null | awk -v since="$1" '
+		{ t=$1; if (t+0 <= since+0) next; sub(/\..*/,"",t) }
+		/Peer Connection Initiated/ && match($0, /\[[^]]+\] Peer Connection/) {
+			n=substr($0, RSTART+1, RLENGTH-18); ip=$0; sub(/.*\]/,"",ip); sub(/:[0-9]+$/,"",ip)
+			print "EVENT\t"t"\topenvpn\t"n"\tconnected\t"ip; next }
+		/client-instance exiting|Inactivity timeout|Connection reset, restarting|connection-reset/ {
+			for (i=2;i<=NF;i++) if ($i ~ /^[A-Za-z0-9_.-]+\/[0-9a-fA-F.:]+:[0-9]+$/) {
+				split($i, p, "/"); ip=p[2]; sub(/:[0-9]+$/,"",ip)
+				print "EVENT\t"t"\topenvpn\t"p[1]"\tdisconnected\t"ip; break } }'
+}
+
+if [[ $interval -eq 0 ]]; then
+	snapshot; echo "END"; exit 0
+fi
+last=$(date +%s.%N)
+while :; do
+	snapshot
+	now=$(date +%s.%N)
+	events_since "$last"
+	last=$now
+	echo "END"
+	sleep "$interval"
+done

@@ -1,0 +1,12 @@
+# Example vpn-sync server config: ~/.config/vpn-sync/<NAME>.conf
+# Normally written for you by `vpn-sync server add` or the app's Add Server sheet.
+HOST=203.0.113.10                   # public IP or hostname
+SSH_USER=ubuntu                     # ubuntu on Lightsail/EC2 Ubuntu, root on most VPS
+SSH_KEY="$HOME/.config/vpn-sync/keys/MyServer.pem"
+SSH_PORT=22
+HOST_ALIAS=myserver                 # name of the pinned host key in ~/.config/vpn-sync/known_hosts
+# JUMP=OtherServer                  # optional: reach this server through another one...
+# PRIVATE_IP=172.26.0.10            # ...at this private address
+DEST_PARENT="$HOME/Desktop"         # profiles go to $DEST_PARENT/<NAME>-<ip>/
+LIGHTSAIL_REGION=ap-northeast-1     # optional: console link, and AWS CLI IP lookup if set up
+LIGHTSAIL_INSTANCE=MyServer
