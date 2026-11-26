@@ -26,6 +26,7 @@
 #   vpn-sync server edit NAME [--host H] [--user U] [--key FILE.pem] [--port N]
 #                           [--jump SERVER|none] [--private-ip IP] [--region R]
 #   vpn-sync server remove NAME
+#   vpn-sync server rename OLD NEW        (also renames its Desktop folder)
 #   vpn-sync server probe NAME            what's installed (KEY=VALUE lines)
 #   vpn-sync server install NAME [--openvpn-proto tcp|udp] [--openvpn-port N]
 #                           [--wireguard-port N] [--dns 1-7] [--client NAME]
@@ -404,6 +405,34 @@ server_remove() {
 	info "removed server $name from this Mac (the server itself and its Desktop folder are untouched)"
 }
 
+server_rename() { # server_rename OLD NEW: display name only; host key pin and Lightsail instance name stay
+	local old="$1" new="$2" f d
+	[ -f "$CONFIG_DIR/$old.conf" ] || die "no server named '$old'"
+	[[ "$new" =~ $SERVER_RE ]] || die "new name: use 1-40 letters, digits, _ or -"
+	[ "$old" != "$new" ] || die "that's already its name"
+	[ ! -e "$CONFIG_DIR/$new.conf" ] || die "a server named '$new' already exists"
+	load_server "$old"
+	W_HOST="$S_HOST" W_USER="$S_USER" W_PORT="$S_PORT" W_ALIAS="$S_ALIAS" W_JUMP="$S_JUMP"
+	W_PRIVATE_IP="$S_PRIVATE_IP" W_TUNNELS="$S_TUNNELS" W_DEST="$S_DEST" W_REGION="$S_REGION" W_INSTANCE="$S_INSTANCE"
+	W_KEY="$S_KEY"
+	if [ "$S_KEY" = "$KEYS_DIR/$old.pem" ]; then           # our own copy of the key follows the name
+		mv "$KEYS_DIR/$old.pem" "$KEYS_DIR/$new.pem"; W_KEY="$KEYS_DIR/$new.pem"
+	fi
+	write_server "$new"
+	[ -f "$CONFIG_DIR/$old.last-ip" ] && mv "$CONFIG_DIR/$old.last-ip" "$CONFIG_DIR/$new.last-ip"
+	rm -f "$CONFIG_DIR/$old.conf"
+	for f in "$CONFIG_DIR"/*.conf; do                     # servers that connect through this one
+		[ -f "$f" ] && grep -qx "JUMP=$old" "$f" && sed -i '' "s/^JUMP=$old\$/JUMP=$new/" "$f" \
+			&& info "  $(basename "$f" .conf) now connects through $new"
+	done
+	for d in "$S_DEST/$old"-*; do                         # Desktop folder <name>-<ip>
+		[ -d "$d" ] && [[ "${d##*/$old-}" =~ $IPV4_RE ]] || continue
+		if [ -e "$S_DEST/$new-${d##*/$old-}" ]; then info "  ! kept ${d##*/}: ${new}-${d##*/$old-} already exists"
+		else mv "$d" "$S_DEST/$new-${d##*/$old-}" && info "  renamed folder ${d##*/} -> $new-${d##*/$old-}"; fi
+	done
+	info "renamed server $old -> $new"
+}
+
 PROBE_SCRIPT='
 . /etc/os-release 2>/dev/null && echo "OS=$PRETTY_NAME"
 if [ -f /etc/openvpn/server/server.conf ]; then
@@ -514,9 +543,10 @@ if [ "${1:-}" = server ]; then
 		add) [ $# -ge 1 ] || die "usage: vpn-sync server add NAME --host H --key FILE"; server_add "$@" ;;
 		edit) [ $# -ge 1 ] || die "usage: vpn-sync server edit NAME [options]"; server_edit "$@" ;;
 		remove) [ $# -eq 1 ] || die "usage: vpn-sync server remove NAME"; server_remove "$1" ;;
+		rename) [ $# -eq 2 ] || die "usage: vpn-sync server rename OLD NEW"; server_rename "$1" "$2" ;;
 		probe) [ $# -eq 1 ] || die "usage: vpn-sync server probe NAME"; server_probe "$1" ;;
 		install) [ $# -ge 1 ] || die "usage: vpn-sync server install NAME [options]"; server_install "$@" ;;
-		*) die "unknown server command '$sub' (list, hostkey, add, edit, remove, probe, install)" ;;
+		*) die "unknown server command '$sub' (list, hostkey, add, edit, remove, rename, probe, install)" ;;
 	esac
 	exit
 fi
@@ -529,7 +559,7 @@ while [ $# -gt 0 ]; do
 		--no-apps) opt_apps=0 ;;
 		--add) add_names opt_add "${2:-}"; shift ;;
 		--remove) add_names opt_remove "${2:-}"; shift ;;
-		-h|--help) sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		-h|--help) sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		-*) die "unknown option: $1 (see --help)" ;;
 		*) servers+=("$1") ;;
 	esac

@@ -50,6 +50,9 @@ struct MenuBarPanel: View {
     @State private var confirmRemove: String?
     @State private var removeError: (server: String, message: String)?
     @State private var removing = false
+    @State private var renaming: String?
+    @State private var newName = ""
+    @FocusState private var nameFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -102,12 +105,42 @@ struct MenuBarPanel: View {
                     Text(linkText(w, count: online.count)).font(.caption).foregroundStyle(.secondary)
                 }
                 Button {
-                    removeError = nil
+                    removeError = nil; confirmRemove = nil
+                    if renaming == s { renaming = nil } else { renaming = s; newName = s; nameFocused = true }
+                } label: { Image(systemName: "pencil") }
+                    .buttonStyle(.borderless)
+                    .disabled(removing)
+                    .help("Rename \(s)")
+                Button {
+                    removeError = nil; renaming = nil
                     confirmRemove = (confirmRemove == s ? nil : s)
                 } label: { Image(systemName: "trash") }
                     .buttonStyle(.borderless)
                     .disabled(removing)
                     .help("Remove \(s) from VPN Sync")
+            }
+            if renaming == s {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        TextField("New name", text: $newName)
+                            .textFieldStyle(.roundedBorder)
+                            .focused($nameFocused)
+                            .onSubmit { rename(s) }
+                            .disabled(removing)
+                        Button("Cancel") { renaming = nil }.disabled(removing)
+                        Button("Rename") { rename(s) }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(removing || renameProblem(s) != nil || newName == s)
+                    }
+                    if let p = renameProblem(s), !newName.isEmpty {
+                        Text(p).font(.caption).foregroundStyle(.red)
+                    } else {
+                        Text("Its Desktop folder is renamed too. Devices and the server itself aren't affected.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(8)
+                .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
             }
             if confirmRemove == s {
                 VStack(alignment: .leading, spacing: 6) {
@@ -143,6 +176,30 @@ struct MenuBarPanel: View {
                         .padding(.leading, 6)
                     }
                 }
+            }
+        }
+    }
+
+    private func renameProblem(_ s: String) -> String? {
+        if newName.isEmpty { return "Enter a name." }
+        if !isValidServerName(newName) { return "Use letters, numbers, - and _ (no spaces), up to 40." }
+        if newName != s && m.servers.contains(newName) { return "“\(newName)” already exists." }
+        return nil
+    }
+
+    private func rename(_ s: String) {
+        guard renameProblem(s) == nil, newName != s, !removing else { return }
+        removing = true
+        let to = newName
+        Task {
+            let (code, out) = await m.cli(["server", "rename", s, to], label: "Renaming \(s)…")
+            removing = false
+            renaming = nil
+            if code == 0 {
+                m.reloadServers(select: m.server == s ? to : nil)
+            } else {
+                let msg = out.split(separator: "\n").last.map { String($0).replacingOccurrences(of: "vpn-sync: ", with: "") }
+                removeError = (s, "Not renamed: \(msg ?? "unknown error").")
             }
         }
     }
