@@ -282,6 +282,7 @@ struct DeviceAvatar: View {
     let name: String
     let online: Bool?
     var size: CGFloat = 34
+    var kind: DeviceKind = .unknown
 
     var body: some View {
         let h = Double(stableHash(name) % 1000) / 1000
@@ -290,9 +291,13 @@ struct DeviceAvatar: View {
         ZStack {
             Circle().fill(LinearGradient(colors: [top, bottom], startPoint: .top, endPoint: .bottom))
             Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1)
-            Text(initials(name))
-                .font(.system(size: size * 0.38, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white)
+            if kind == .unknown {
+                Text(initials(name))
+                    .font(.system(size: size * 0.38, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+            } else {
+                LucideIcon(kind.icon, size: size * 0.5).foregroundStyle(.white)
+            }
         }
         .frame(width: size, height: size)
         .overlay(alignment: .bottomTrailing) {

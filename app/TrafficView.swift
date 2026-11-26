@@ -274,7 +274,7 @@ struct TrafficView: View {
                         .buttonStyle(.plain)
                         .help(m.isPinned(row.key) ? "Unpin" : "Pin to the top")
                         .accessibilityLabel(m.isPinned(row.key) ? "Unpin \(row.key)" : "Pin \(row.key)")
-                        DeviceAvatar(name: row.key, online: nil, size: 24)
+                        DeviceAvatar(name: row.key, online: nil, size: 24, kind: m.deviceKind(row.key))
                     }
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {

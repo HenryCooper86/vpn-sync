@@ -1,6 +1,7 @@
 // Renders the 1024×1024 app icon: a frosted glass shield on a midnight tile with a glowing key
 // inside (Lucide's key-round, the same icon family as the app). VPN + security.
-// Usage: `swift make-icon.swift out.png` (run from app/, reads lucide/key-round.svg)
+// Usage: `swift make-icon.swift out.png` (run from app/, reads lucide/key-round.svg).
+// If app/logo.local.png exists (a personal picture, ignored by git), the icon is that picture instead.
 import AppKit
 import CoreGraphics
 
@@ -44,6 +45,32 @@ func shield(_ r: CGRect) -> CGPath {
 func scaled(_ path: CGPath, by k: CGFloat, toward f: CGPoint) -> CGPath {
     var t = CGAffineTransform(translationX: f.x, y: f.y).scaledBy(x: k, y: k).translatedBy(x: -f.x, y: -f.y)
     return path.copy(using: &t)!
+}
+
+// A personal picture, if present (app/logo.local.png, kept out of git): use it as the icon.
+if let pic = NSImage(contentsOfFile: "logo.local.png"),
+   let cg = pic.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+    let body = CGRect(x: 100, y: 100, width: 824, height: 824)
+    let tile = CGPath(roundedRect: body, cornerWidth: 186, cornerHeight: 186, transform: nil)
+    ctx.saveGState()
+    ctx.setShadow(offset: CGSize(width: 0, height: -14), blur: 34, color: CGColor(colorSpace: cs, components: [0, 0, 0, 0.38])!)
+    ctx.addPath(tile); ctx.setFillColor(rgb(0x202020)); ctx.fillPath()
+    ctx.restoreGState()
+    ctx.saveGState()
+    ctx.addPath(tile); ctx.clip()
+    ctx.interpolationQuality = .high
+    // fill the tile, cropping the longer side
+    let w = CGFloat(cg.width), h = CGFloat(cg.height), k = max(body.width / w, body.height / h)
+    ctx.draw(cg, in: CGRect(x: body.midX - w * k / 2, y: body.midY - h * k / 2, width: w * k, height: h * k))
+    // soft top highlight, like light on glass
+    ctx.drawLinearGradient(grad([white(0.18), white(0)], [0, 1]),
+                           start: CGPoint(x: 512, y: 924), end: CGPoint(x: 512, y: 700), options: [])
+    ctx.restoreGState()
+    ctx.addPath(CGPath(roundedRect: body.insetBy(dx: 1.5, dy: 1.5), cornerWidth: 185, cornerHeight: 185, transform: nil))
+    ctx.setStrokeColor(white(0.22)); ctx.setLineWidth(3); ctx.strokePath()
+    try! NSBitmapImageRep(cgImage: ctx.makeImage()!).representation(using: .png, properties: [:])!
+        .write(to: URL(fileURLWithPath: out))
+    exit(0)
 }
 
 // macOS icon grid: 824×824 body centred in 1024

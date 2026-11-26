@@ -490,6 +490,21 @@ struct DeviceRow: View {
     @Environment(\.theme) private var t
     let device: Device
 
+    /// "iPhone, OpenVPN Connect 3.7.4" / "TV (guessed from the name)"
+    private var kindLine: String {
+        let k = m.deviceKind(device.name)
+        if let app = m.deviceApp(device.name), !m.deviceKindIsManual(device.name) { return "\(k.label), \(app)" }
+        if m.deviceKindIsManual(device.name) { return k.label }
+        if k == .unknown { return "Device type unknown" }
+        return m.live?.devInfo[device.name] == nil ? "\(k.label) (guessed from the name)" : k.label
+    }
+
+    /// What Automatic would pick, ignoring the user's choice.
+    private var autoKind: DeviceKind {
+        if let info = m.live?.devInfo[device.name], let k = DeviceKind.from(platform: info.platform, name: device.name) { return k }
+        return DeviceKind.guess(name: device.name)
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             if m.selecting {
@@ -498,7 +513,9 @@ struct DeviceRow: View {
                     set: { on in if on { m.selection.insert(device.name) } else { m.selection.remove(device.name) } }))
                     .toggleStyle(.checkbox).labelsHidden()
             }
-            DeviceAvatar(name: device.name, online: m.lastSnapshot == nil ? nil : m.isOnline(device.name))
+            DeviceAvatar(name: device.name, online: m.lastSnapshot == nil ? nil : m.isOnline(device.name),
+                         kind: m.deviceKind(device.name))
+                .help(m.deviceKind(device.name).label)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(device.name).font(.system(size: 14, weight: .semibold, design: .rounded))
@@ -506,7 +523,9 @@ struct DeviceRow: View {
                     if device.ovpn != nil && device.wg == nil { Badge(text: "OpenVPN only", color: openVPNColor) }
                     if device.wg != nil && device.ovpn == nil { Badge(text: "WireGuard only", color: .cyan) }
                     if device.ovpn == nil && device.wg == nil { Badge(text: "no profile file", color: .secondary) }
+                    if m.isPinned(device.name) { LucideIcon("star", size: 11).foregroundStyle(.yellow).help("Pinned") }
                 }
+                Text(kindLine).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 LiveLine(name: device.name)
             }
             Spacer(minLength: 8)
@@ -530,6 +549,19 @@ struct DeviceRow: View {
                 Menu {
                     if let u = device.ovpn { Button("Import OpenVPN Profile on This Mac") { m.importOnThisMac(u) } }
                     if let u = device.wg { Button("Import WireGuard Profile on This Mac") { m.importOnThisMac(u) } }
+                    Divider()
+                    Menu("Device Type") {
+                        Toggle("Automatic (\(autoKind.label))", isOn: Binding(
+                            get: { !m.deviceKindIsManual(device.name) },
+                            set: { if $0 { m.setDeviceKind(device.name, nil) } }))
+                        Divider()
+                        ForEach(DeviceKind.choices) { k in
+                            Toggle(k.label, isOn: Binding(
+                                get: { m.deviceKindIsManual(device.name) && m.deviceKind(device.name) == k },
+                                set: { if $0 { m.setDeviceKind(device.name, k) } }))
+                        }
+                    }
+                    Button(m.isPinned(device.name) ? "Unpin" : "Pin to Top") { m.togglePin(device.name) }
                     Divider()
                     Button("Show in Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting([device.ovpn, device.wg].compactMap { $0 })
@@ -1063,10 +1095,6 @@ struct ContentView: View {
                     Text(m.events.isEmpty ? "Activity" : "Activity (\(m.events.count))").tag(MainTab.activity)
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
-                if tab == .devices {
-                    Text(m.lastSnapshot == nil ? "\(rows.count)" : "\(m.onlineCount) of \(rows.count) online")
-                        .font(.system(.callout, design: .rounded)).foregroundStyle(.secondary)
-                }
                 Spacer()
                 LiveToggle()
                 if tab == .devices { deviceToolbar }

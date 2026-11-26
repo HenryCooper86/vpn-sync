@@ -20,6 +20,9 @@ A macOS app and command-line tool for running your own OpenVPN + WireGuard serve
   (download above the line, upload below; 5 min / 15 min / 1 h; MB/s or Mbit/s), peak speed,
   connections, most devices online at once, the server's own totals from `vnstat`, and
   devices and protocols ranked by data. Star a device to pin it to the top.
+- **Device types:** what each OpenVPN client reports (iPhone, Android, Mac, Windows, Linux,
+  and the app version) is read from the server log; WireGuard devices are guessed from their
+  name. Set any device's type yourself from its ⋯ menu.
 - **Control services:** start, stop or restart OpenVPN and WireGuard, or reboot the server.
 - **Menu bar:** a shield with the number of devices online across all servers; click it to
   see who is connected where, or rename (pencil) or remove (trash) a server. Closing the

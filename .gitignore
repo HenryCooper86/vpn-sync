@@ -8,3 +8,5 @@ app/build/
 !examples/*
 known_hosts
 *.last-ip
+# personal app icon picture (make-icon.swift uses it when present)
+app/logo.local.*

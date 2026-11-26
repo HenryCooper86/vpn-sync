@@ -54,6 +54,8 @@ final class ServerWatcher {
     private(set) var history: [TrafficPoint] = []          // total speed, last hour
     private(set) var stats = TrafficStats()
     private(set) var serverTotals: ServerTotals?
+    /// What each OpenVPN client reported about itself (platform, app), from DEVINFO lines.
+    private(set) var devInfo: [String: (platform: String, app: String)] = [:]
     private var prevBytes: [String: (rx: Int64, tx: Int64)] = [:]
     private var snapshotsSinceSave = 0
 
@@ -195,6 +197,8 @@ final class ServerWatcher {
             snapOVPN = [:]; snapWG = [:]; snapServices = [:]
         case "OVPNTIME":
             ovpnFileTime = Int(f[safe: 1] ?? "") ?? 0
+        case "DEVINFO" where f.count >= 4:
+            devInfo[f[1]] = (f[2], f[3])
         case "TOTALS" where f.count >= 6:
             serverTotals = ServerTotals(iface: f[1], todayRx: Int64(f[2]) ?? 0, todayTx: Int64(f[3]) ?? 0,
                                         monthRx: Int64(f[4]) ?? 0, monthTx: Int64(f[5]) ?? 0)

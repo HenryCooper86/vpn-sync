@@ -188,7 +188,7 @@ struct MenuBarPanel: View {
                     VStack(spacing: 8) {
                         ForEach(online, id: \.name) { d in
                             HStack(spacing: 10) {
-                                DeviceAvatar(name: d.name, online: true, size: 26)
+                                DeviceAvatar(name: d.name, online: true, size: 26, kind: m.deviceKind(d.name))
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(d.name).font(.system(size: 13, weight: .semibold, design: .rounded))
                                     Text(d.via).font(.caption).foregroundStyle(.secondary).lineLimit(1)
