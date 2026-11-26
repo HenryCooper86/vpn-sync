@@ -1184,6 +1184,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated {
             Notifier.shared.setup()
+            // Device locations: load the offline country table; fetch it once if it's missing.
+            GeoDB.shared.load { Model.shared?.objectWillChange.send() }
+            if !GeoDB.shared.available, let m = Model.shared {
+                Task { @MainActor in
+                    let (code, _) = await m.runCLI(["geo", "update"], quiet: true)
+                    if code == 0 { GeoDB.shared.load { m.objectWillChange.send() } }
+                }
+            }
             if Model.shared?.notify ?? true { Notifier.shared.requestPermission() }  // macOS asks only once
             if let m = Model.shared { openPanelPreviewIfRequested(m); openSheetPreviewIfRequested(m) }
         }

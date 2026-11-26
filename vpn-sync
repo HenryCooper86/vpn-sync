@@ -18,6 +18,11 @@
 #   vpn-sync service <server> <openvpn|wireguard|all> <start|stop|restart|status>
 #   vpn-sync reboot <server>              reboot the whole server
 #
+# Device locations (offline country lookup; no IP address leaves this Mac):
+#   vpn-sync geo update                   download the IP-to-country table (ip-location-db,
+#                                         public domain) to ~/.config/vpn-sync/geo/
+#   vpn-sync geo lookup <ip>              country code for an IPv4 address
+#
 # Lightsail lookup (finds a server's new IP after a stop/start):
 #   vpn-sync aws set                      save a read-only AWS key in the Keychain
 #                                         (asks, or reads "ID<newline>SECRET" from stdin)
@@ -209,6 +214,39 @@ aws_cmd() {
 			echo "IP=$ip"
 			;;
 		*) die "usage: vpn-sync aws set | status | remove | ip <server>" ;;
+	esac
+}
+
+# ---------------------------------------------------------------- device locations
+GEO_PKG="@ip-location-db/geo-whois-asn-country@2.3.2026061719"
+GEO_DIR="$CONFIG_DIR/geo"
+
+geo_cmd() {
+	case "${1:-}" in
+		update)
+			mkdir -p "$GEO_DIR"
+			local tmp; tmp=$(mktemp -d "$GEO_DIR/.dl.XXXXXX"); STAGES="$STAGES $tmp"
+			info "downloading the IP-to-country table ($GEO_PKG, about 8 MB)"
+			curl -fsSL -m 600 -o "$tmp/ipv4-num.csv" "https://cdn.jsdelivr.net/npm/$GEO_PKG/geo-whois-asn-country-ipv4-num.csv" \
+				|| die "download failed"
+			curl -fsSL -m 60 -o "$tmp/package.json" "https://cdn.jsdelivr.net/npm/$GEO_PKG/package.json" || true
+			# every line must be "start,end,CC" with numbers and a two-letter code
+			local bad; bad=$(grep -cvE '^[0-9]+,[0-9]+,[A-Z]{2}$' "$tmp/ipv4-num.csv" || true)
+			local rows; rows=$(wc -l < "$tmp/ipv4-num.csv" | tr -d ' ')
+			[ "$rows" -gt 50000 ] && [ "$bad" -eq 0 ] || die "the downloaded table doesn't look right ($rows rows, $bad bad lines); kept the old one"
+			mv "$tmp/ipv4-num.csv" "$GEO_DIR/ipv4-num.csv"
+			[ -s "$tmp/package.json" ] && mv "$tmp/package.json" "$GEO_DIR/package.json"
+			echo "$GEO_PKG" > "$GEO_DIR/VERSION"
+			info "saved $rows ranges to $GEO_DIR/ipv4-num.csv"
+			;;
+		lookup)
+			local ip="${2:-}"; [[ "$ip" =~ $IPV4_RE ]] || die "usage: vpn-sync geo lookup <ipv4>"
+			[ -s "$GEO_DIR/ipv4-num.csv" ] || die "no table yet: run vpn-sync geo update"
+			local IFS=. a b c d; read -r a b c d <<< "$ip"
+			local n=$(( (a << 24) + (b << 16) + (c << 8) + d ))
+			awk -F, -v n="$n" '$1 <= n && n <= $2 { print "COUNTRY=" $3; found=1; exit } END { if (!found) print "COUNTRY=" }' "$GEO_DIR/ipv4-num.csv"
+			;;
+		*) die "usage: vpn-sync geo update | lookup <ip>" ;;
 	esac
 }
 
@@ -605,6 +643,7 @@ case "${1:-}" in
 	status|watch) monitor "$@"; exit ;;
 	service) shift; service_cmd "$@"; exit ;;
 	aws) shift; aws_cmd "$@"; exit ;;
+	geo) shift; geo_cmd "$@"; exit ;;
 	reboot) service_cmd "$@"; exit ;;
 esac
 

@@ -99,9 +99,9 @@ final class ServerWatcher {
             let o = ovpnLive[n], w = wgOnline(n) ? wgLive[n] : nil
             let via: String
             switch (o, w) {
-            case let (o?, nil): via = "OpenVPN from \(o.realIP)"
-            case let (nil, w?): via = "WireGuard from \(w.endpoint ?? "an unknown address")"
-            case let (o?, _?): via = "OpenVPN and WireGuard from \(o.realIP)"
+            case let (o?, nil): via = "OpenVPN from \(withFlag(o.realIP))"
+            case let (nil, w?): via = "WireGuard from \(w.endpoint.map(withFlag) ?? "an unknown address")"
+            case let (o?, _?): via = "OpenVPN and WireGuard from \(withFlag(o.realIP))"
             default: via = ""
             }
             return (n, via, rates[n])
@@ -524,17 +524,24 @@ struct LiveLine: View {
         if let text = summary {
             Text(text).font(.caption).foregroundStyle(m.isOnline(name) ? .primary : .secondary)
                 .lineLimit(1).truncationMode(.tail)
+                .help(location.map { "Connecting from \($0)" } ?? "")
         }
+    }
+
+    private var location: String? {
+        if let o = m.ovpnLive[name] { return countryOf(o.realIP) }
+        if m.wgOnline(name), let ep = m.wgLive[name]?.endpoint { return countryOf(ep) }
+        return nil
     }
 
     private var summary: String? {
         guard m.lastSnapshot != nil else { return nil }
         var parts: [String] = []
         if let o = m.ovpnLive[name] {
-            parts.append("On OpenVPN from \(o.realIP) since \(o.since.formatted(date: .omitted, time: .shortened))")
+            parts.append("On OpenVPN from \(withFlag(o.realIP)) since \(o.since.formatted(date: .omitted, time: .shortened))")
         }
         if m.wgOnline(name), let w = m.wgLive[name] {
-            parts.append("\(parts.isEmpty ? "On " : "and ")WireGuard from \(w.endpoint ?? "an unknown address")")
+            parts.append("\(parts.isEmpty ? "On " : "and ")WireGuard from \(w.endpoint.map(withFlag) ?? "an unknown address")")
         }
         if !parts.isEmpty { return parts.joined(separator: ", ") }
         if let hs = m.wgLive[name]?.handshake {
@@ -686,7 +693,8 @@ struct ActivityView: View {
                             Circle().fill(e.connected ? t.online : Color.secondary.opacity(0.6)).frame(width: 7, height: 7)
                             Text(e.device).font(.system(.callout, design: .rounded).weight(.semibold))
                             Text(e.connected ? "connected" : "disconnected").font(.callout)
-                            Text("on \(e.vpn)\(e.ip == "-" ? "" : " from \(e.ip)")").font(.callout).foregroundStyle(.secondary)
+                            Text("on \(e.vpn)\(e.ip == "-" ? "" : " from \(withFlag(e.ip))")").font(.callout).foregroundStyle(.secondary)
+                                .help(countryOf(e.ip) ?? "")
                             Spacer()
                         }
                     }

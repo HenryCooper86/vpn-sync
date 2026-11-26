@@ -45,8 +45,30 @@ struct AppearanceSettings: View {
 
 struct GeneralSettings: View {
     @EnvironmentObject var m: Model
+    @State private var geoStatus = ""
+    @State private var updating = false
     var body: some View {
         Form {
+            Section("Device locations") {
+                Text("Flags show which country each device connects from. The lookup uses a local table (ip-location-db, public domain), so no address is sent anywhere.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Text(geoStatus.isEmpty ? (GeoDB.shared.available ? "Table installed" : "Table not downloaded yet") : geoStatus)
+                        .font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    if updating { ProgressView().controlSize(.small) }
+                    Button(GeoDB.shared.available ? "Update Table" : "Download Table") {
+                        updating = true
+                        Task {
+                            let (code, out) = await m.runCLI(["geo", "update"], quiet: true)
+                            updating = false
+                            geoStatus = code == 0 ? "Updated" : lastLines(out, 1).replacingOccurrences(of: "vpn-sync: ", with: "")
+                            if code == 0 { GeoDB.shared.load { m.objectWillChange.send() } }
+                        }
+                    }
+                    .disabled(updating)
+                }
+            }
             Section {
                 Toggle("Live monitoring", isOn: Binding(get: { m.monitoring }, set: { m.setMonitoring($0) }))
                 Text("Keeps one SSH connection open to each server to show who is connected.")
@@ -59,7 +81,7 @@ struct GeneralSettings: View {
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
-        .frame(height: 220)
+        .frame(height: 360)
     }
 }
 
