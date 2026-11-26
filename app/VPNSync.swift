@@ -738,10 +738,20 @@ struct BatchAddSheet: View {
 
 // MARK: - Main window
 
+enum MainTab: Hashable { case devices, traffic, activity }
+
 struct ContentView: View {
     @EnvironmentObject var m: Model
     @Environment(\.theme) private var theme
     @State private var showActivity = true
+    /// Starting tab (test hook VPNSYNC_TAB=traffic|activity, for screenshots).
+    @State private var tab: MainTab = {
+        switch ProcessInfo.processInfo.environment["VPNSYNC_TAB"] {
+        case "traffic": return .traffic
+        case "activity": return .activity
+        default: return .devices
+        }
+    }()
     @State private var showDetails = false
 
     var body: some View {
@@ -750,8 +760,6 @@ struct ContentView: View {
             if !m.server.isEmpty { ServicesBar() }
             hints
             devicesSection
-            activitySection
-            Spacer(minLength: 0)
             DisclosureGroup(isExpanded: $showDetails) {
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -1041,20 +1049,48 @@ struct ContentView: View {
         let known = Set(m.devices.map(\.name))
         let extra = m.allDeviceNames.filter { !known.contains($0) }.map { Device(name: $0) }
         let all = m.devices + extra
-        guard m.lastSnapshot != nil else { return all }
-        return all.filter { m.isOnline($0.name) } + all.filter { !m.isOnline($0.name) }
+        let pinned = all.filter { m.isPinned($0.name) }, rest = all.filter { !m.isPinned($0.name) }
+        guard m.lastSnapshot != nil else { return pinned + rest }
+        return pinned + rest.filter { m.isOnline($0.name) } + rest.filter { !m.isOnline($0.name) }
     }
 
     private var devicesSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 10) {
-                Text("Devices").font(.system(size: 20, weight: .bold, design: .rounded))
-                Text(m.lastSnapshot == nil ? "\(rows.count)" : "\(m.onlineCount) of \(rows.count) online")
-                    .font(.system(.callout, design: .rounded)).foregroundStyle(.secondary)
+                Picker("Section", selection: $tab) {
+                    Text("Devices").tag(MainTab.devices)
+                    Text("Traffic").tag(MainTab.traffic)
+                    Text(m.events.isEmpty ? "Activity" : "Activity (\(m.events.count))").tag(MainTab.activity)
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                if tab == .devices {
+                    Text(m.lastSnapshot == nil ? "\(rows.count)" : "\(m.onlineCount) of \(rows.count) online")
+                        .font(.system(.callout, design: .rounded)).foregroundStyle(.secondary)
+                }
                 Spacer()
                 LiveToggle()
-                deviceToolbar
+                if tab == .devices { deviceToolbar }
             }
+            switch tab {
+            case .traffic:
+                TrafficView().frame(maxHeight: .infinity)
+            case .activity:
+                ActivityView(tall: true)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .glassPanel(24)
+            case .devices:
+                devicesList
+            }
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+        .sheet(isPresented: $m.showAddDevice, onDismiss: {
+            if let p = m.pendingQR { m.pendingQR = nil; m.qrDevice = p }
+        }) { AddDeviceSheet().environmentObject(m) }
+        .sheet(isPresented: $m.showBatchAdd) { BatchAddSheet().environmentObject(m) }
+    }
+
+    @ViewBuilder private var devicesList: some View {
             Group {
                 if m.desktopWaiting {
                     VStack(spacing: 6) {
@@ -1091,11 +1127,6 @@ struct ContentView: View {
                 }
             }
             .glassPanel(24)
-        }
-        .sheet(isPresented: $m.showAddDevice, onDismiss: {
-            if let p = m.pendingQR { m.pendingQR = nil; m.qrDevice = p }
-        }) { AddDeviceSheet().environmentObject(m) }
-        .sheet(isPresented: $m.showBatchAdd) { BatchAddSheet().environmentObject(m) }
     }
 
     private var activitySection: some View {

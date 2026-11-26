@@ -9,6 +9,7 @@
 #   WG    <name> <endpoint ip|-> <vpn ip> <bytes rx> <bytes tx> <latest handshake, 0 = never>
 #   EVENT <epoch> openvpn <name> connected|disconnected <ip|->   (from the OpenVPN log, instant)
 #   SERVICE <openvpn|wireguard> <active|inactive|failed|missing> <active since epoch|0>
+#   TOTALS <iface> <today rx> <today tx> <month rx> <month tx>   (bytes, from vnstat; every ~30 s)
 #   END
 set -euo pipefail
 # shellcheck source=../lib/common.sh
@@ -61,15 +62,28 @@ events_since() { # OpenVPN connect/disconnect lines from the journal after epoch
 				print "EVENT\t"t"\topenvpn\t"p[1]"\tdisconnected\t"ip; break } }'
 }
 
+totals() { # server network totals from vnstat (if installed and has data yet)
+	command -v vnstat >/dev/null || return 0
+	local ifc line
+	ifc=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+	[[ -n "$ifc" ]] || return 0
+	line=$(vnstat -i "$ifc" --oneline b 2>/dev/null) || return 0
+	# 1;iface;day;rx;tx;total;rate;month;rx;tx;total;rate;…
+	awk -F';' -v i="$ifc" 'NF>=11 && $1 ~ /^[0-9]+$/ {print "TOTALS\t"i"\t"$4"\t"$5"\t"$9"\t"$10}' <<< "$line"
+}
+
 if [[ $interval -eq 0 ]]; then
-	snapshot; echo "END"; exit 0
+	snapshot; totals; echo "END"; exit 0
 fi
 last=$(date +%s.%N)
+n=0
 while :; do
 	snapshot
 	now=$(date +%s.%N)
 	events_since "$last"
 	last=$now
+	(( n % 10 == 0 )) && totals
+	n=$((n + 1))
 	echo "END"
 	sleep "$interval"
 done

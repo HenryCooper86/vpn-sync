@@ -44,13 +44,14 @@ for p in "$ovpn_port" "$wg_port"; do [[ "$p" =~ ^[0-9]+$ && $p -ge 1 && $p -le 6
 [[ "$client" =~ ^[A-Za-z0-9_-]{1,15}$ ]] || die "--client: use 1-15 letters, digits, _ or -"
 
 # ---- 1. packages
-say "Installing helper packages (expect, qrencode, curl)"
+say "Installing helper packages (expect, qrencode, curl, vnstat)"
 if command -v apt-get >/dev/null; then
 	export DEBIAN_FRONTEND=noninteractive
 	apt-get update -qq
-	apt-get install -y -qq expect qrencode curl >/dev/null
+	apt-get install -y -qq expect qrencode curl vnstat >/dev/null
 elif command -v dnf >/dev/null; then
 	dnf install -y -q expect curl >/dev/null
+	dnf install -y -q vnstat >/dev/null 2>&1 || true
 	dnf install -y -q qrencode >/dev/null 2>&1 || { dnf install -y -q epel-release >/dev/null && dnf install -y -q qrencode >/dev/null; }
 else
 	die "unsupported system: need apt-get or dnf (Ubuntu, Debian, AlmaLinux, Rocky, CentOS, Fedora)"
@@ -150,5 +151,7 @@ for d in "$OVPN_DIR" "$WG_DIR"; do
 done
 systemctl daemon-reload
 systemctl enable --now vpn-endpoint-sync.timer >/dev/null 2>&1
+# traffic totals per day/month for the Traffic view (keeps counting while the app is closed)
+systemctl enable --now vnstat >/dev/null 2>&1 || true
 /usr/local/sbin/vpn-endpoint-sync
 echo "SETUP_OK"

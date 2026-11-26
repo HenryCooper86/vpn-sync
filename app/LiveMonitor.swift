@@ -50,6 +50,13 @@ final class ServerWatcher {
     private(set) var events: [LiveEvent] = []
     private(set) var lastSnapshot: Date?
 
+    // Traffic statistics (see TrafficStats below; today's figures are saved per day)
+    private(set) var history: [TrafficPoint] = []          // total speed, last hour
+    private(set) var stats = TrafficStats()
+    private(set) var serverTotals: ServerTotals?
+    private var prevBytes: [String: (rx: Int64, tx: Int64)] = [:]
+    private var snapshotsSinceSave = 0
+
     private var process: Process?
     private var lineBuffer = ""
     private var snapOVPN: [String: OVPNConn] = [:]
@@ -69,6 +76,7 @@ final class ServerWatcher {
     init(server: String, model: Model) {
         self.server = server
         self.model = model
+        self.stats = TrafficStats.load(server: server)
     }
 
     func wgOnline(_ name: String) -> Bool {
@@ -129,6 +137,7 @@ final class ServerWatcher {
     }
 
     func stop() {
+        stats.save(server: server)
         retryTask?.cancel(); retryTask = nil
         if let p = process {
             process = nil
@@ -186,6 +195,9 @@ final class ServerWatcher {
             snapOVPN = [:]; snapWG = [:]; snapServices = [:]
         case "OVPNTIME":
             ovpnFileTime = Int(f[safe: 1] ?? "") ?? 0
+        case "TOTALS" where f.count >= 6:
+            serverTotals = ServerTotals(iface: f[1], todayRx: Int64(f[2]) ?? 0, todayTx: Int64(f[3]) ?? 0,
+                                        monthRx: Int64(f[4]) ?? 0, monthTx: Int64(f[5]) ?? 0)
         case "SERVICE" where f.count >= 4:
             let since = Int(f[3]) ?? 0
             snapServices[f[1]] = ServiceState(state: f[2], since: since > 0 ? Date(timeIntervalSince1970: TimeInterval(since)) : nil)
@@ -263,16 +275,47 @@ final class ServerWatcher {
         }
         prevOVPNFileTime = ovpnFileTime
         rates = newRates
+        accumulate(now: now)
         firstSnapshot = false
         changed()
         if model?.server == server { writeDebugState() }
     }
 
     private func addEvent(_ e: LiveEvent) {
+        if e.connected { stats.rollDay(); stats.connections += 1 }
         events.insert(e, at: 0)
         if events.count > 300 { events.removeLast(events.count - 300) }
         model?.liveEvent(e, server: server)
         changed()
+    }
+
+    /// Adds this snapshot's byte counts to today's totals and the speed history.
+    private func accumulate(now: Date) {
+        stats.rollDay()
+        func add(_ key: String, device: String, proto: String, rx: Int64, tx: Int64) {
+            defer { prevBytes[key] = (rx, tx) }
+            guard let p = prevBytes[key] else { return }          // first sighting: don't count history
+            // a counter that went down means a new session: count from zero
+            let dRx = rx >= p.rx ? rx - p.rx : rx
+            let dTx = tx >= p.tx ? tx - p.tx : tx
+            guard dRx > 0 || dTx > 0 else { return }
+            stats.add(device: device, proto: proto, down: dTx, up: dRx)   // server tx = device download
+        }
+        for (n, w) in snapWG { add("wg:\(n)", device: n, proto: "WireGuard", rx: w.rx, tx: w.tx) }
+        for (n, o) in snapOVPN { add("ovpn:\(n)", device: n, proto: "OpenVPN", rx: o.rx, tx: o.tx) }
+
+        let down = rates.values.reduce(0) { $0 + $1.down }
+        let up = rates.values.reduce(0) { $0 + $1.up }
+        history.append(TrafficPoint(time: now, down: down, up: up))
+        let cutoff = now.addingTimeInterval(-3600)
+        if let i = history.firstIndex(where: { $0.time >= cutoff }), i > 0 { history.removeFirst(i) }
+        stats.peakDown = max(stats.peakDown, down)
+        stats.peakUp = max(stats.peakUp, up)
+        let online = Set(ovpnLive.keys).union(wgLive.keys.filter { wgOnline($0) }).count
+        stats.maxOnline = max(stats.maxOnline, online)
+
+        snapshotsSinceSave += 1
+        if snapshotsSinceSave >= 20 { snapshotsSinceSave = 0; stats.save(server: server) }
     }
 
     /// Test hook: with VPNSYNC_DEBUG_DIR set, write the selected server's live state after every snapshot.
@@ -442,7 +485,17 @@ extension Array {
 
 // MARK: - Formatting and views
 
+/// A speed in bytes or bits per second, following the MB/s / Mbit/s choice in the Traffic tab.
 func formatRate(_ bytesPerSec: Double) -> String {
+    if UserDefaults.standard.string(forKey: "rateUnit") == "bits" {
+        let b = bytesPerSec * 8
+        switch b {
+        case ..<1_000: return "\(Int(b)) bit/s"
+        case ..<1_000_000: return String(format: "%.0f kbit/s", b / 1_000)
+        case ..<1_000_000_000: return String(format: b < 10_000_000 ? "%.1f Mbit/s" : "%.0f Mbit/s", b / 1_000_000)
+        default: return String(format: "%.2f Gbit/s", b / 1_000_000_000)
+        }
+    }
     if bytesPerSec < 1024 { return "\(Int(bytesPerSec)) B/s" }
     let f = ByteCountFormatter(); f.countStyle = .binary; f.allowedUnits = [.useKB, .useMB, .useGB]
     return f.string(fromByteCount: Int64(bytesPerSec)) + "/s"
@@ -611,6 +664,7 @@ struct ServicesBar: View {
 struct ActivityView: View {
     @EnvironmentObject var m: Model
     @Environment(\.theme) private var t
+    var tall = false
     var body: some View {
         if m.events.isEmpty {
             Text(m.monitoring ? "Connects and disconnects show up here while VPN Sync is running." : "Turn on Live to see connects and disconnects.")
@@ -635,7 +689,7 @@ struct ActivityView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(height: 104)
+            .frame(maxHeight: tall ? .infinity : 104)
         }
     }
 }
