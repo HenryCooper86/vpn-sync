@@ -17,7 +17,22 @@ for s in 16 32 128 256 512; do
 done
 iconutil -c icns -o "$APP/Contents/Resources/AppIcon.icns" build/AppIcon.iconset
 
-codesign --force --sign - "$APP"
+# Sign with a stable identity so macOS remembers permissions (Desktop access, notifications)
+# across rebuilds. Uses $VPNSYNC_SIGN_ID if set, else the first "Apple Development" or
+# "Developer ID Application" certificate in the keychain, else ad hoc (permissions are then
+# asked again after every rebuild).
+SIGN_ID="${VPNSYNC_SIGN_ID:-}"
+if [ -z "$SIGN_ID" ]; then
+	SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
+		| awk '/"(Apple Development|Developer ID Application):/ {print $2; exit}')
+fi
+if [ -n "$SIGN_ID" ]; then
+	codesign --force --sign "$SIGN_ID" --timestamp=none "$APP"
+	echo "signed with: $(codesign -dvv "$APP" 2>&1 | sed -n 's/^Authority=//p' | head -1)"
+else
+	codesign --force --sign - "$APP"
+	echo "warning: no signing certificate found; signed ad hoc (macOS will re-ask permissions after each rebuild)"
+fi
 mkdir -p "$HOME/Applications"
 rm -rf "$HOME/Applications/VPN Sync.app"
 ditto "$APP" "$HOME/Applications/VPN Sync.app"
