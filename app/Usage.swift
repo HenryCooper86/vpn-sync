@@ -197,6 +197,29 @@ struct UsageLine: View {
     }
 }
 
+/// Pause/Resume and limit actions for one device (row menus in the panel and Traffic tab).
+struct LimitMenuItems: View {
+    @ObservedObject var m: Model
+    let server: String
+    let name: String
+    var beforeEdit: () -> Void = {}
+    var body: some View {
+        let u = m.usageByServer[server]
+        if u?.paused[name] != nil {
+            Button("Resume Internet") { Task { await m.setPaused(name, false, server: server) } }
+        } else {
+            Button("Pause Internet") { Task { await m.setPaused(name, true, server: server) } }
+        }
+        Button(u?.limits[name] == nil ? "Set Usage Limit…" : "Edit Usage Limit…") {
+            beforeEdit()
+            m.limitTarget = LimitTarget(server: server, device: name)
+        }
+        if u?.limits[name] != nil {
+            Button("Remove Limit") { Task { _ = await m.saveLimit(name, server: server, nil) } }
+        }
+    }
+}
+
 /// "Paused" capsule; the tooltip says why and until when.
 struct PausedBadge: View {
     let info: PauseInfo
@@ -256,18 +279,7 @@ struct PanelLimits: View {
                 Text("\(formatBytes(used.today)) today").font(.caption).foregroundStyle(.secondary).monospacedDigit()
             }
             Menu {
-                if u.paused[n] != nil {
-                    Button("Resume Internet") { Task { await m.setPaused(n, false, server: server) } }
-                } else {
-                    Button("Pause Internet") { Task { await m.setPaused(n, true, server: server) } }
-                }
-                Button(limit == nil ? "Set Usage Limit…" : "Edit Usage Limit…") {
-                    openMain()
-                    m.limitTarget = LimitTarget(server: server, device: n)
-                }
-                if limit != nil {
-                    Button("Remove Limit") { Task { _ = await m.saveLimit(n, server: server, nil) } }
-                }
+                LimitMenuItems(m: m, server: server, name: n, beforeEdit: openMain)
             } label: { LucideIcon("ellipsis", size: 13).foregroundStyle(.secondary).frame(width: 18, height: 18) }
                 .fullLabelMenu()
                 .disabled(m.busy)

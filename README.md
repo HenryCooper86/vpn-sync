@@ -36,7 +36,8 @@ A macOS app and command-line tool for running your own OpenVPN + WireGuard serve
   device's traffic on the server with a firewall rule: it stays connected, nothing is revoked,
   and **Resume Internet** undoes it. A limit pause lifts at midnight (daily) or on the 1st
   (monthly); days follow the Mac's time zone.
-  The menu bar panel lists each server's limited and paused devices with the same actions.
+  The menu bar panel and the Traffic tab list limited and paused devices with the same
+  actions; the Traffic tab also shows every device's data this month.
 - **Menu bar:** a shield with the number of devices online across all servers; click it to
   see who is connected where, or rename (pencil) or remove (trash) a server. Closing the
   window keeps VPN Sync running there (quit from

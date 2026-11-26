@@ -65,7 +65,8 @@ struct TrafficView: View {
                     ranked(title: "By protocol", rows: m.trafficStats.protocols, pinnable: false)
                         .frame(width: 230)
                 }
-                Text("Today's figures count from when VPN Sync started watching \(m.server) and reset at midnight. Server totals come from the server itself.")
+                usageSection
+                Text("Today's figures count from when VPN Sync started watching \(m.server) and reset at midnight. Server totals, usage and limits come from the server itself.")
                     .font(.caption).foregroundStyle(.secondary)
                     .id("bottom")
             }
@@ -75,6 +76,11 @@ struct TrafficView: View {
         .onAppear {   // test hook: VPNSYNC_TRAFFIC_SCROLL=bottom, for screenshots
             if ProcessInfo.processInfo.environment["VPNSYNC_TRAFFIC_SCROLL"] == "bottom" {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) { proxy.scrollTo("bottom", anchor: .bottom) }
+            }
+        }
+        .onChange(of: m.usage) {   // the usage section arrives later and makes the page taller
+            if ProcessInfo.processInfo.environment["VPNSYNC_TRAFFIC_SCROLL"] == "bottom" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
         }
         }
@@ -408,6 +414,95 @@ struct TrafficView: View {
         .padding(.horizontal, 12).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassPanel(16)
+    }
+
+    // MARK: usage and limits (counted by the server every minute)
+
+    /// Devices with usage this month, a limit or a pause: paused first, then by this month's data.
+    private var usageRows: [(name: String, usage: DeviceUsage)] {
+        guard let u = m.usage else { return [] }
+        let names = Set(u.usage.filter { $0.value.month > 0 }.keys).union(u.limits.keys).union(u.paused.keys)
+        return names.map { ($0, u.usage[$0] ?? DeviceUsage()) }.sorted { a, b in
+            let pa = u.paused[a.name] != nil, pb = u.paused[b.name] != nil
+            if pa != pb { return pa }
+            if a.usage.month != b.usage.month { return a.usage.month > b.usage.month }
+            return a.name.localizedStandardCompare(b.name) == .orderedAscending
+        }
+    }
+
+    private var usageSection: some View {
+        let rows = usageRows
+        let top = max(rows.map(\.usage.month).max() ?? 1, 1)
+        let monthTotal = rows.reduce(Int64(0)) { $0 + $1.usage.month }
+        let limited = m.usage?.limits.count ?? 0, paused = m.usage?.paused.count ?? 0
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Usage and limits").font(.system(.callout, design: .rounded).weight(.semibold))
+                Spacer()
+                if m.usage != nil {
+                    Text("\(formatBytes(monthTotal)) this month, \(limited) limit\(limited == 1 ? "" : "s")" + (paused > 0 ? ", \(paused) paused" : ""))
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                }
+            }
+            if m.usage == nil {
+                Text(m.monitoring ? "Waiting for \(m.server)'s usage report. If it doesn't arrive, run Set Up for \(m.server) to install usage tracking."
+                                  : "Turn on Live to see each device's data and limits.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else if rows.isEmpty {
+                Text("No data counted this month yet. Set a limit from a device's menu on the Devices tab.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            ForEach(rows, id: \.name) { row in usageRow(row.name, row.usage, top: top) }
+            if !rows.isEmpty {
+                HStack(spacing: 14) {
+                    legendDot(TrafficColor.down(t.dark), "Download this month")
+                    legendDot(TrafficColor.up(t.dark), "Upload this month")
+                }
+                .padding(.top, 2)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassPanel(20)
+    }
+
+    private func usageRow(_ name: String, _ u: DeviceUsage, top: Int64) -> some View {
+        let limit = m.usageLimit(name), pause = m.pauseInfo(name)
+        return HStack(alignment: .top, spacing: 10) {
+            DeviceAvatar(name: name, online: m.lastSnapshot == nil ? nil : m.isOnline(name), size: 24, kind: m.deviceKind(name))
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    Text(name).font(.system(size: 13, weight: .medium, design: .rounded)).lineLimit(1)
+                    if let pause { PausedBadge(info: pause) }
+                    Spacer()
+                    Text("\(formatBytes(u.today)) today").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                    Text(formatBytes(u.month)).font(.system(.caption, design: .rounded).weight(.medium)).monospacedDigit()
+                        .frame(minWidth: 62, alignment: .trailing)
+                }
+                splitBar(ByteCount(down: u.monthDown, up: u.monthUp), top: top)
+                if let limit, let (f, text) = limit.tightest(u) {
+                    HStack(spacing: 8) {
+                        UsageMeter(fraction: f, width: 70)
+                        Text(text + (f >= 1 ? ", reached" : limit.pauses ? ", pauses at 100%" : ", alerts only"))
+                            .font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                    }
+                }
+            }
+            Menu { LimitMenuItems(m: m, server: m.server, name: name) } label: {
+                LucideIcon("ellipsis", size: 13).foregroundStyle(.secondary).frame(width: 20, height: 20)
+            }
+            .fullLabelMenu()
+            .disabled(m.busy)
+            .accessibilityLabel("Limit options for \(name)")
+        }
+        .help("This month: download \(formatBytes(u.monthDown)), upload \(formatBytes(u.monthUp)). Today: \(formatBytes(u.today)).")
+    }
+
+    private func legendDot(_ c: Color, _ label: String) -> some View {
+        HStack(spacing: 5) {
+            Capsule().fill(c).frame(width: 10, height: 5)
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+        }
     }
 
     // MARK: ranked lists
