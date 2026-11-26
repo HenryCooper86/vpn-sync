@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# vpn-service — start, stop, restart or show the VPN services.
+# Usage: vpn-service <openvpn|wireguard|all> <start|stop|restart|status>
+#        vpn-service reboot            reboot the whole server
+# Status lines (tab separated): SERVICE <openvpn|wireguard> <active|inactive|failed|missing> <active since epoch|0>
+# Stopping doesn't disable the service: it starts again at the next boot.
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "${VPN_SYNC_LIB:-/usr/local/lib/vpn-sync}/common.sh"
+require_root
+
+unit_for() {
+	case "$1" in
+		openvpn) echo "openvpn-server@server.service" ;;
+		wireguard) echo "wg-quick@wg0.service" ;;
+	esac
+}
+installed() {
+	case "$1" in
+		openvpn) [[ -f "$OVPN_SERVER_CONF" ]] ;;
+		wireguard) [[ -f "$WG_CONF" ]] ;;
+	esac
+}
+status_line() {
+	local vpn="$1" unit state since=0
+	unit=$(unit_for "$vpn")
+	if ! installed "$vpn"; then printf 'SERVICE\t%s\tmissing\t0\n' "$vpn"; return; fi
+	state=$(systemctl is-active "$unit" 2>/dev/null || true)
+	[[ -n "$state" ]] || state=unknown
+	if [[ "$state" == active ]]; then
+		since=$(systemctl show -p ActiveEnterTimestamp --value "$unit" 2>/dev/null)
+		since=$( [[ -n "$since" ]] && date -d "$since" +%s 2>/dev/null || echo 0)
+	fi
+	printf 'SERVICE\t%s\t%s\t%s\n' "$vpn" "$state" "$since"
+}
+
+if [[ "${1:-}" == reboot ]]; then
+	echo "rebooting in 2 seconds"
+	systemd-run --on-active=2 --timer-property=AccuracySec=100ms /bin/systemctl reboot >/dev/null
+	exit 0
+fi
+
+target="${1:-}" action="${2:-}"
+case "$target" in openvpn|wireguard) vpns=("$target") ;; all) vpns=(openvpn wireguard) ;; *)
+	echo "usage: vpn-service <openvpn|wireguard|all> <start|stop|restart|status> | vpn-service reboot" >&2; exit 64 ;; esac
+case "$action" in start|stop|restart|status) ;; *) echo "action must be start, stop, restart or status" >&2; exit 64 ;; esac
+
+rc=0
+for vpn in "${vpns[@]}"; do
+	if [[ "$action" != status ]]; then
+		if ! installed "$vpn"; then
+			[[ "$target" == all ]] && continue
+			echo "$vpn is not installed on this server" >&2; exit 66
+		fi
+		if systemctl "$action" "$(unit_for "$vpn")"; then
+			echo "$vpn: ${action/stop/stopp}ed"
+		else
+			echo "$vpn: $action failed" >&2; rc=70
+		fi
+	fi
+	status_line "$vpn"
+done
+exit $rc

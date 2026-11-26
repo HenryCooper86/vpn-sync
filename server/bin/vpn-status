@@ -8,6 +8,7 @@
 #   OVPN  <name> <real ip> <vpn ip> <bytes rx> <bytes tx> <connected since>
 #   WG    <name> <endpoint ip|-> <vpn ip> <bytes rx> <bytes tx> <latest handshake, 0 = never>
 #   EVENT <epoch> openvpn <name> connected|disconnected <ip|->   (from the OpenVPN log, instant)
+#   SERVICE <openvpn|wireguard> <active|inactive|failed|missing> <active since epoch|0>
 #   END
 set -euo pipefail
 # shellcheck source=../lib/common.sh
@@ -30,6 +31,7 @@ wg_names() { # pubkey<TAB>name<TAB>vpn ip, from wg0.conf comments
 snapshot() {
 	local now; now=$(date +%s)
 	printf 'SNAPSHOT\t%s\n' "$now"
+	/usr/local/sbin/vpn-service all status 2>/dev/null || true
 	if [[ -n "$OVPN_STATUS" ]]; then
 		awk -F, '
 			$1=="TIME" {print "OVPNTIME\t"$3}

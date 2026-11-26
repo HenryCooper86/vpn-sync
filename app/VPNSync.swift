@@ -108,23 +108,12 @@ final class Model: ObservableObject {
     @Published var monitoring = UserDefaults.standard.object(forKey: "monitoring") as? Bool ?? true {
         didSet { UserDefaults.standard.set(monitoring, forKey: "monitoring") }
     }
-    @Published var liveState: LiveLink = .off
-    @Published var ovpnLive: [String: OVPNConn] = [:]
-    @Published var wgLive: [String: WGPeer] = [:]
-    @Published var rates: [String: Rate] = [:]
-    @Published var events: [LiveEvent] = []
-    @Published var lastSnapshot: Date?
-    var watchProcess: Process?
-    var watchServer = ""
-    var lineBuffer = ""
-    var snapOVPN: [String: OVPNConn] = [:]
-    var snapWG: [String: WGPeer] = [:]
-    var snapTime = 0
-    var ovpnFileTime = 0
-    var prevOVPNFileTime = 0
-    var ovpnOverride: [String: (connected: Bool, time: Int, ip: String)] = [:]
-    var prevCounters: [String: (rx: Int64, tx: Int64, time: Int)] = [:]
-    var firstSnapshot = true
+    @Published var notify = UserDefaults.standard.object(forKey: "notify") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(notify, forKey: "notify") }
+    }
+    /// One live watcher per server, so notifications cover every server, not just the selected one.
+    var watchers: [String: ServerWatcher] = [:]
+    @Published var confirmService: ServiceAction?
     static weak var shared: Model?
 
     // live progress for add/remove
@@ -158,19 +147,15 @@ final class Model: ObservableObject {
         selecting = false
         selection = []
         reload()
-        if watchProcess != nil && watchServer != server {   // the watched server was removed or switched
-            stopMonitoring()
-            if monitoring && !server.isEmpty { startMonitoring() }
-        }
+        syncWatchers()
     }
 
     func selectServer(_ name: String) {
         guard name != server || serverIP == nil else { return }
-        stopMonitoring()
         reloadServers(select: name)
         status = .idle
         notices = []
-        Task { await check(); if monitoring { startMonitoring() } }
+        Task { await check() }
     }
 
     func reload() {
@@ -678,6 +663,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 14) {
             header
             controls
+            if !m.server.isEmpty { ServicesBar() }
             hints
             deviceToolbar
             devicesBox
@@ -706,6 +692,16 @@ struct ContentView: View {
             if m.monitoring { m.startMonitoring() }
         }
         .sheet(item: $m.qrDevice) { QRSheet(device: $0) }
+        .alert(serviceTitle, isPresented: Binding(
+            get: { m.confirmService != nil },
+            set: { if !$0 { m.confirmService = nil } }), presenting: m.confirmService) { a in
+            Button(a.action == "reboot" ? "Reboot" : a.action == "stop" ? "Stop" : "Restart", role: .destructive) {
+                Task { await m.runService(a) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { a in
+            Text(serviceMessage(a))
+        }
         .sheet(isPresented: $m.showServers) { ServerListSheet().environmentObject(m) }
         .sheet(isPresented: $m.showAddServer) { AddServerSheet().environmentObject(m) }
         .sheet(item: Binding(get: { m.editServer.map(ServerRef.init) }, set: { m.editServer = $0?.name })) {
@@ -723,6 +719,24 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) {}
         } message: { names in
             Text("\(names.joined(separator: ", ")) will stop working right away on both OpenVPN and WireGuard. Revoking the OpenVPN certificate can't be undone; the profile files are kept in a backup on the server.")
+        }
+    }
+
+    private var serviceTitle: String {
+        guard let a = m.confirmService else { return "" }
+        if a.action == "reboot" { return "Reboot \(a.server)?" }
+        return "\(a.action == "stop" ? "Stop" : "Restart") \(a.vpnLabel) on \(a.server)?"
+    }
+
+    private func serviceMessage(_ a: ServiceAction) -> String {
+        let mac = "If this Mac is connected through it, it loses internet until the VPN is back (or you disconnect the VPN app)."
+        switch a.action {
+        case "reboot":
+            return "Every device on \(a.server) is disconnected for about a minute while it restarts. The IP address stays the same. \(mac)"
+        case "stop":
+            return "Every device connected through \(a.vpnLabel) is disconnected and can't reconnect until you start it again. It also starts again automatically if the server reboots. \(mac)"
+        default:
+            return "Devices connected through \(a.vpnLabel) drop for a few seconds and then reconnect on their own."
         }
     }
 
@@ -933,6 +947,12 @@ struct ContentView: View {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            Notifier.shared.setup()
+            if Model.shared?.notify ?? true { Notifier.shared.requestPermission() }  // macOS asks only once
+        }
+    }
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated { Model.shared?.stopMonitoring() }   // don't leave the SSH watcher running
     }

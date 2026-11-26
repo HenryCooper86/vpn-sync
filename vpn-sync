@@ -14,6 +14,10 @@
 #   vpn-sync status <server>              who is connected now (one snapshot)
 #   vpn-sync watch <server> [--interval N]  stream a snapshot every N seconds (default 3)
 #
+# Services:
+#   vpn-sync service <server> <openvpn|wireguard|all> <start|stop|restart|status>
+#   vpn-sync reboot <server>              reboot the whole server
+#
 # Servers:
 #   vpn-sync server list
 #   vpn-sync server hostkey --host H [--port N] | --jump SERVER --private-ip IP
@@ -479,8 +483,26 @@ monitor() { # monitor once|watch SERVER [--interval N]
 
 # ---------------------------------------------------------------- main
 
+service_cmd() { # service_cmd SERVER VPN ACTION | reboot SERVER
+	if [ "$1" = reboot ]; then
+		[ -n "${2:-}" ] || die "usage: vpn-sync reboot <server>"
+		load_server "$2"; connect "" || die "can't reach $2"
+		remote "$(sudo_prefix)/usr/local/sbin/vpn-service reboot" </dev/null 2>&1 | prefix_stream
+		info "  $2 is rebooting; it's usually back within a minute"
+		return 0
+	fi
+	local name="${1:-}" vpn="${2:-}" action="${3:-}"
+	[ -n "$name" ] || die "usage: vpn-sync service <server> <openvpn|wireguard|all> <start|stop|restart|status>"
+	[[ "$vpn" =~ ^(openvpn|wireguard|all)$ ]] || die "VPN must be openvpn, wireguard or all"
+	[[ "$action" =~ ^(start|stop|restart|status)$ ]] || die "action must be start, stop, restart or status"
+	load_server "$name"; connect "" >&2 || die "can't reach $name"
+	remote "$(sudo_prefix)/usr/local/sbin/vpn-service $vpn $action" </dev/null 2>&1
+}
+
 case "${1:-}" in
 	status|watch) monitor "$@"; exit ;;
+	service) shift; service_cmd "$@"; exit ;;
+	reboot) service_cmd "$@"; exit ;;
 esac
 
 if [ "${1:-}" = server ]; then
@@ -507,7 +529,7 @@ while [ $# -gt 0 ]; do
 		--no-apps) opt_apps=0 ;;
 		--add) add_names opt_add "${2:-}"; shift ;;
 		--remove) add_names opt_remove "${2:-}"; shift ;;
-		-h|--help) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		-h|--help) sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		-*) die "unknown option: $1 (see --help)" ;;
 		*) servers+=("$1") ;;
 	esac

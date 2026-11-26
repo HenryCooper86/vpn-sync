@@ -12,7 +12,9 @@ A macOS app and command-line tool for running your own OpenVPN + WireGuard serve
   changes (at boot and every 15 minutes). The Mac pulls fresh profiles to
   `~/Desktop/<server>-<ip>/` and fixes OpenVPN Connect's saved profile.
 - **Watch it live:** see which devices are connected, from where, since when, and how
-  fast, with a log of connects and disconnects.
+  fast, with a log of connects and disconnects, and a macOS notification whenever a
+  device connects or disconnects on any server.
+- **Control services:** start, stop or restart OpenVPN and WireGuard, or reboot the server.
 - **Reach locked-down servers:** connect through another server over a private network
   (for example two Lightsail instances in one region) so SSH can stay closed to the internet.
 
@@ -36,7 +38,9 @@ server bundle in `~/.local/share/vpn-sync/server`, and `~/Applications/VPN Sync.
    Open the same ports in the provider's firewall (Lightsail: instance → Networking).
 3. Use **Add Device / Batch Add… / Batch Remove…** and the row menu to manage devices,
    **QR** to show a WireGuard code, **Sync Now** after an IP change, and **Live** for
-   monitoring. Switch servers from the server name menu; edit IP, key or user in **Servers**.
+   monitoring (the bell turns notifications on or off). Use the **OpenVPN / WireGuard**
+   menus to start, stop or restart a VPN and **Server → Reboot Server…** to reboot. Switch
+   servers from the server name menu; edit IP, key or user in **Servers**.
 
 ## Command line
 
@@ -48,6 +52,8 @@ vpn-sync --add a,b,c <server>              create devices
 vpn-sync --remove a,b <server>             revoke/remove devices
 vpn-sync status <server>                   who is connected now
 vpn-sync watch <server> [--interval N]     stream connection snapshots
+vpn-sync service <server> <openvpn|wireguard|all> <start|stop|restart|status>
+vpn-sync reboot <server>
 vpn-sync server list | add | edit | remove | hostkey | probe | install
 ```
 
@@ -63,7 +69,8 @@ Run `vpn-sync --help` for all options.
 | `server/bin/vpn-endpoint-sync` | Rewrites profiles and templates for the current public IP and refreshes QR codes (systemd timer). |
 | `server/bin/vpn-add-client`, `vpn-remove-client` | Add/remove devices on both VPNs by driving the Nyr menus with `expect`. All names are validated first. Removed files are kept in `/root/vpn-sync-backups/`. |
 | `server/bin/vpn-export-profiles` | Streams all client profiles as a tarball. |
-| `server/bin/vpn-status` | Connected devices: OpenVPN status file and log, `wg show` handshakes. |
+| `server/bin/vpn-status` | Connected devices (OpenVPN status file and log, `wg show` handshakes) and service state. |
+| `server/bin/vpn-service` | Start/stop/restart the VPN services, or reboot. Stopped services start again at boot. |
 
 Local state lives in `~/.config/vpn-sync/`: one `<server>.conf` per server (see
 `examples/server.conf.example`), copies of the SSH keys in `keys/`, pinned host keys in
