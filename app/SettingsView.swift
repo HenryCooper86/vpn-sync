@@ -24,6 +24,7 @@ struct SettingsView: View {
                 .tabItem { Label("Lightsail", systemImage: "cloud") }
         }
         .frame(width: 560)
+        .buttonStyle(ClearGlassButtonStyle())
         .environmentObject(m)
     }
 }
@@ -31,13 +32,14 @@ struct SettingsView: View {
 struct AppearanceSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Theme").font(.system(size: 16, weight: .semibold, design: .rounded))
-            Text("Each theme sets the colours behind the glass, the accent, and light or dark mode.")
+            Text("Appearance").font(.system(size: 16, weight: .semibold, design: .rounded))
+            Text("Automatic follows your Mac's light or dark setting. Buttons use your macOS accent colour.")
                 .font(.callout).foregroundStyle(.secondary)
             ThemePicker()
         }
         .padding(22)
-        .frame(height: 300, alignment: .top)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: 240, alignment: .top)
     }
 }
 
@@ -56,6 +58,7 @@ struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .frame(height: 220)
     }
 }
@@ -95,7 +98,7 @@ struct LightsailSettings: View {
                     Text("Stored in your login Keychain, never in a file.").font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("Save Key") { Task { await saveKey() } }
-                        .buttonStyle(.borderedProminent)
+                        .glassButton(prominent: true)
                         .disabled(working || keyID.isEmpty || secret.isEmpty)
                 }
             }
@@ -135,6 +138,7 @@ struct LightsailSettings: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .frame(height: 560)
         .task { await refresh() }
     }

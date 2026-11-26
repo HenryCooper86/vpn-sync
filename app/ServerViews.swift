@@ -82,7 +82,7 @@ struct OutputView: View {
                     .id("out")
             }
             .frame(height: height)
-            .background(Color.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 6))
+            .glassPanel(14)
             .onChange(of: text) { proxy.scrollTo("out", anchor: .bottom) }
         }
     }
@@ -143,7 +143,7 @@ struct ServerListSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Servers").font(.title2.bold())
+            Text("Servers").font(.system(size: 22, weight: .bold, design: .rounded))
             if m.servers.isEmpty {
                 Text("No servers yet. Add one to get started.").foregroundStyle(.secondary)
             }
@@ -162,7 +162,7 @@ struct ServerListSheet: View {
                                         .focused($nameFocused)
                                         .onSubmit { rename(name) }
                                     Button("Save") { rename(name) }
-                                        .buttonStyle(.borderedProminent)
+                                        .glassButton(prominent: true)
                                         .disabled(renameBusy || newName == name || renameProblem(name) != nil)
                                     Button("Cancel") { renaming = nil }.disabled(renameBusy)
                                 }
@@ -189,8 +189,9 @@ struct ServerListSheet: View {
                             .help("Remove from VPN Sync")
                     }
                     .controlSize(.small)
-                    .padding(.vertical, 8)
-                    Divider()
+                    .padding(.vertical, 10).padding(.horizontal, 12)
+                    .glassPanel(16)
+                    .padding(.bottom, 8)
                 }
             }
             .disabled(m.busy)
@@ -198,11 +199,12 @@ struct ServerListSheet: View {
             HStack {
                 Button { adding = true } label: { Label("Add Server…", systemImage: "plus") }
                 Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction).glassButton(prominent: true)
             }
         }
         .padding(24)
         .frame(width: 600)
+        .glassSheet()
         .sheet(isPresented: $adding) { AddServerSheet().environmentObject(m) }
         .sheet(item: $editing) { EditServerSheet(name: $0.name).environmentObject(m) }
         .sheet(item: $installing) { InstallSheet(name: $0.name).environmentObject(m) }
@@ -260,7 +262,7 @@ struct AddServerSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(step == .setup ? "Set Up \(name)" : "Add Server").font(.title2.bold())
+            Text(step == .setup ? "Set Up \(name)" : "Add Server").font(.system(size: 22, weight: .bold, design: .rounded))
             switch step {
             case .details: details
             case .verify: verify
@@ -269,6 +271,7 @@ struct AddServerSheet: View {
         }
         .padding(24)
         .frame(width: 600)
+        .glassSheet()
     }
 
     private var details: some View {
@@ -325,7 +328,7 @@ struct AddServerSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).disabled(working)
                 Button("Next") { Task { await fetchHostKey() } }
-                    .keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction).glassButton(prominent: true)
                     .disabled(!ready || working)
             }
         }
@@ -339,9 +342,9 @@ struct AddServerSheet: View {
             Text(fingerprint)
                 .font(.system(.body, design: .monospaced))
                 .textSelection(.enabled)
-                .padding(10)
+                .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+                .glassPanel(14)
             if !m.opLog.isEmpty && working { OutputView(text: m.opLog, height: 90) }
             if let error { Text(error).font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
             HStack {
@@ -349,7 +352,7 @@ struct AddServerSheet: View {
                 Spacer()
                 Button("Back") { step = .details; error = nil }.disabled(working)
                 Button("Trust and Add") { Task { await addServer() } }
-                    .keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent).disabled(working)
+                    .keyboardShortcut(.defaultAction).glassButton(prominent: true).disabled(working)
             }
         }
     }
@@ -415,7 +418,7 @@ struct EditServerSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Edit \(name)").font(.title2.bold())
+            Text("Edit \(name)").font(.system(size: 22, weight: .bold, design: .rounded))
             FormRow(label: "Address", hint: info.lastIP.isEmpty || info.lastIP == info.host ? "Public IP or hostname. Change it here when the server's IP changes." : "Last seen at \(info.lastIP). Change it here when the server's IP changes.") {
                 TextField("IP or hostname", text: $info.host).textFieldStyle(.roundedBorder)
             }
@@ -465,12 +468,13 @@ struct EditServerSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).disabled(working)
                 Button("Save") { Task { await save() } }
-                    .keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction).glassButton(prominent: true)
                     .disabled(working || problem != nil)
             }
         }
         .padding(24)
         .frame(width: 600)
+        .glassSheet()
         .onAppear {
             info = ServerInfo(name: name)
             if info.host.isEmpty { info.host = info.lastIP }
@@ -515,11 +519,12 @@ struct InstallSheet: View {
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Set Up \(name)").font(.title2.bold())
+            Text("Set Up \(name)").font(.system(size: 22, weight: .bold, design: .rounded))
             InstallPanel(name: name, onDone: { dismiss() })
         }
         .padding(24)
         .frame(width: 600)
+        .glassSheet()
     }
 }
 
@@ -575,7 +580,7 @@ struct InstallPanel: View {
                 Text("Its profiles were copied to your Desktop. Make sure the VPN ports are open in the server's firewall (\(portSummary)).")
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 OutputView(text: m.opLog, height: 160)
-                HStack { Spacer(); Button("Done") { m.selectServer(name); onDone() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent) }
+                HStack { Spacer(); Button("Done") { m.selectServer(name); onDone() }.keyboardShortcut(.defaultAction).glassButton(prominent: true) }
             case .failed:
                 Label("Setup didn't finish.", systemImage: "xmark.octagon.fill").foregroundStyle(.red).font(.headline)
                 if let error { Text(error).font(.callout).fixedSize(horizontal: false, vertical: true) }
@@ -583,7 +588,7 @@ struct InstallPanel: View {
                 HStack {
                     Spacer()
                     Button("Close") { onDone() }
-                    Button("Check Again") { Task { await runProbe() } }.buttonStyle(.borderedProminent)
+                    Button("Check Again") { Task { await runProbe() } }.glassButton(prominent: true)
                 }
             }
         }
@@ -612,7 +617,7 @@ struct InstallPanel: View {
                 Text("This system isn't supported (needs apt or dnf).").foregroundStyle(.red)
             }
             if !hasOVPN || !hasWG {
-                GroupBox {
+                VStack(alignment: .leading, spacing: 0) {
                     VStack(alignment: .leading, spacing: 8) {
                         if !hasOVPN {
                             HStack {
@@ -642,8 +647,9 @@ struct InstallPanel: View {
                         Text("TCP 443 looks like normal HTTPS traffic and gets through most networks; WireGuard on UDP 443 is faster. Open the same ports in the server's firewall (Lightsail: instance → Networking → Add rule).")
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
-                    .padding(4)
+                    .padding(14)
                 }
+                .glassPanel(18)
             } else {
                 Text(hasTools ? "Everything is installed. Running setup again updates the server tools and keeps all VPN settings and devices."
                               : "Both VPNs are installed. Setup adds the server tools and keeps all VPN settings and devices.")
@@ -654,7 +660,7 @@ struct InstallPanel: View {
                 Spacer()
                 Button("Cancel") { onDone() }.keyboardShortcut(.cancelAction)
                 Button(willInstallVPN ? "Install" : (hasTools ? "Update Tools" : "Set Up")) { Task { await install() } }
-                    .keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction).glassButton(prominent: true)
                     .disabled(problem != nil || probe["PKG"] == "unsupported")
             }
         }

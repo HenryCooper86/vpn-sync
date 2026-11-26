@@ -37,11 +37,11 @@ server bundle in `~/.local/share/vpn-sync/server`, and `~/Applications/VPN Sync.
 
 ## Look and feel
 
-Liquid Glass panels and buttons over a colour field (macOS 26+, with material fallbacks on
-macOS 14–15). Settings → Appearance has five themes, each a full palette with its own
-light or dark mode: Aurora, Sakura, Glacier, Moss and Graphite. The header's signal orb shows
-how many devices are online and ripples when one connects (not with Reduce Motion). The app
-icon, a glass lens looking down a tunnel of light, is drawn by `app/make-icon.swift`.
+Liquid Glass panels and buttons on translucent windows that blur what's behind them, with
+material fallbacks on macOS 14–15. Settings → Appearance: Automatic (follows macOS), Light or
+Dark; buttons use your macOS accent colour. The header's signal orb shows how many devices are
+online and ripples when one connects (not with Reduce Motion). The app icon, a glass shield
+with a tunnel narrowing to a lit keyhole, is drawn by `app/make-icon.swift`.
 
 ## Using the app
 

@@ -504,7 +504,7 @@ struct DeviceRow: View {
                     Text(device.name).font(.system(size: 14, weight: .semibold, design: .rounded))
                     // Most devices have both; only the exceptions are worth a badge.
                     if device.ovpn != nil && device.wg == nil { Badge(text: "OpenVPN only", color: openVPNColor) }
-                    if device.wg != nil && device.ovpn == nil { Badge(text: "WireGuard only", color: t.glowB) }
+                    if device.wg != nil && device.ovpn == nil { Badge(text: "WireGuard only", color: .cyan) }
                     if device.ovpn == nil && device.wg == nil { Badge(text: "no profile file", color: .secondary) }
                 }
                 LiveLine(name: device.name)
@@ -557,21 +557,24 @@ struct QRSheet: View {
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         VStack(spacing: 14) {
-            Text("Scan with the WireGuard app").font(.headline)
-            Text(device.name).font(.title2.bold())
+            Text("Scan with the WireGuard app").font(.system(.headline, design: .rounded))
+            Text(device.name).font(.system(size: 24, weight: .bold, design: .rounded))
             if let qr = device.qr, let img = NSImage(contentsOf: qr) {
                 Image(nsImage: img)
                     .interpolation(.none)
                     .resizable()
-                    .frame(width: 340, height: 340)
+                    .frame(width: 320, height: 320)
+                    .padding(14)
+                    .background(.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .padding(10)
-                    .background(.white, in: RoundedRectangle(cornerRadius: 8))
+                    .glassPanel(24)
             }
             Text("In WireGuard tap + → Create from QR code.\nThis code contains the device's private key; don't share it.")
                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            Button("Done") { dismiss() }.keyboardShortcut(.defaultAction).glassButton(prominent: true)
         }
         .padding(24)
+        .glassSheet()
     }
 }
 
@@ -588,7 +591,7 @@ struct AddDeviceSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Add Device").font(.title2.bold())
+            Text("Add Device").font(.system(size: 22, weight: .bold, design: .rounded))
             Text("Creates an OpenVPN and a WireGuard profile for one device on \(m.server), copies them to your Desktop and shows the QR code.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -607,12 +610,13 @@ struct AddDeviceSheet: View {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).disabled(working)
                 Button("Create", action: create)
                     .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
+                    .glassButton(prominent: true)
                     .disabled(working || name.isEmpty || problem != nil)
             }
         }
         .padding(24)
         .frame(width: 440)
+        .glassSheet()
     }
 
     private func create() {
@@ -651,12 +655,12 @@ struct BatchAddSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Batch Add Devices").font(.title2.bold())
+            Text("Batch Add Devices").font(.system(size: 22, weight: .bold, design: .rounded))
             Text("One name per line (or separated by commas). Each device gets an OpenVPN and a WireGuard profile on \(m.server).")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            GroupBox {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
                     Text("Generate").font(.callout)
                     TextField("prefix", text: $prefix).textFieldStyle(.roundedBorder).frame(width: 110)
@@ -671,11 +675,15 @@ struct BatchAddSheet: View {
                 Text(previewOfGenerator).font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .padding(12)
+            .glassPanel(16)
 
             TextEditor(text: $text)
                 .font(.system(.body, design: .monospaced))
                 .frame(height: 150)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+                .scrollContentBackground(.hidden)
+                .padding(8)
+                .glassPanel(14)
                 .disabled(working)
 
             Text(names.isEmpty ? "No names yet." : "\(names.count) device\(names.count == 1 ? "" : "s"): \(names.prefix(12).joined(separator: ", "))\(names.count > 12 ? ", …" : "")")
@@ -694,12 +702,13 @@ struct BatchAddSheet: View {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).disabled(working)
                 Button("Create \(names.count) Device\(names.count == 1 ? "" : "s")", action: create)
                     .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
+                    .glassButton(prominent: true)
                     .disabled(working || names.isEmpty || !problems.isEmpty)
             }
         }
         .padding(24)
         .frame(width: 520)
+        .glassSheet()
     }
 
     private var generated: [String] { (0..<count).map { "\(prefix)\(start + $0)" } }
@@ -781,13 +790,15 @@ struct ContentView: View {
         } message: { a in
             Text(serviceMessage(a))
         }
-        .sheet(isPresented: $m.showServers) { ServerListSheet().environmentObject(m) }
-        .sheet(isPresented: $m.showAddServer) { AddServerSheet().environmentObject(m) }
-        .sheet(item: Binding(get: { m.editServer.map(ServerRef.init) }, set: { m.editServer = $0?.name })) {
-            EditServerSheet(name: $0.name).environmentObject(m)
-        }
-        .sheet(item: Binding(get: { m.installServer.map(ServerRef.init) }, set: { m.installServer = $0?.name })) {
-            InstallSheet(name: $0.name).environmentObject(m)
+        // One sheet slot for the server sheets: several .sheet modifiers on one view aren't all
+        // presented reliably on macOS.
+        .sheet(item: serverSheet) { sheet in
+            switch sheet {
+            case .servers: ServerListSheet().environmentObject(m)
+            case .addServer: AddServerSheet().environmentObject(m)
+            case .edit(let n): EditServerSheet(name: n).environmentObject(m)
+            case .install(let n): InstallSheet(name: n).environmentObject(m)
+            }
         }
         .alert(removalTitle, isPresented: Binding(
             get: { m.confirmRemoval != nil },
@@ -799,6 +810,30 @@ struct ContentView: View {
         } message: { names in
             Text("\(names.joined(separator: ", ")) will stop working right away on both OpenVPN and WireGuard. Revoking the OpenVPN certificate can't be undone; the profile files are kept in a backup on the server.")
         }
+    }
+
+    enum ServerSheet: Identifiable {
+        case servers, addServer, edit(String), install(String)
+        var id: String {
+            switch self {
+            case .servers: return "servers"
+            case .addServer: return "add"
+            case .edit(let n): return "edit/\(n)"
+            case .install(let n): return "install/\(n)"
+            }
+        }
+    }
+
+    private var serverSheet: Binding<ServerSheet?> {
+        Binding(get: {
+            if m.showServers { return .servers }
+            if m.showAddServer { return .addServer }
+            if let n = m.editServer { return .edit(n) }
+            if let n = m.installServer { return .install(n) }
+            return nil
+        }, set: { new in
+            if new == nil { m.showServers = false; m.showAddServer = false; m.editServer = nil; m.installServer = nil }
+        })
     }
 
     private var serviceTitle: String {
@@ -1093,7 +1128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated {
             Notifier.shared.setup()
             if Model.shared?.notify ?? true { Notifier.shared.requestPermission() }  // macOS asks only once
-            if let m = Model.shared { openPanelPreviewIfRequested(m) }
+            if let m = Model.shared { openPanelPreviewIfRequested(m); openSheetPreviewIfRequested(m) }
         }
     }
     func applicationWillTerminate(_ notification: Notification) {
@@ -1109,7 +1144,7 @@ struct VPNSyncApp: App {
         // WindowGroup (not Window) so the window also appears when launched in the
         // background or reopened from the Dock; New Window is removed to keep one window.
         WindowGroup("VPN Sync", id: "main") {
-            Themed { ContentView().environmentObject(model) }
+            Themed { ContentView().environmentObject(model).modifier(SettingsOpener()) }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 700, height: 780)
@@ -1118,7 +1153,7 @@ struct VPNSyncApp: App {
         // Menu bar: devices online across all servers. Keeps monitoring and notifications
         // running after the window is closed; quit from here or with ⌘Q.
         Settings {
-            Themed(backdrop: false) { SettingsView().environmentObject(model) }
+            Themed { SettingsView().environmentObject(model) }
         }
 
         MenuBarExtra {

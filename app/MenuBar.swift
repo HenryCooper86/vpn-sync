@@ -291,3 +291,36 @@ func openPanelPreviewIfRequested(_ m: Model) {
     panelPreviewWindow = w
 }
 @MainActor var panelPreviewWindow: NSWindow?
+
+/// Test hook: VPNSYNC_PREVIEW=settings|servers|addserver|edit|add|batch|qr opens that window or
+/// sheet a few seconds after launch, for screenshots without clicking.
+@MainActor
+func openSheetPreviewIfRequested(_ m: Model) {
+    guard let what = ProcessInfo.processInfo.environment["VPNSYNC_PREVIEW"] else { return }
+    Task { @MainActor in
+        try? await Task.sleep(nanoseconds: 7_000_000_000)
+        switch what {
+        case "settings":
+            NotificationCenter.default.post(name: .vpnSyncOpenSettings, object: nil)
+        case "servers": m.showServers = true
+        case "addserver": m.showAddServer = true
+        case "edit": m.editServer = m.server
+        case "add": m.showAddDevice = true
+        case "batch": m.showBatchAdd = true
+        case "qr": m.qrDevice = m.devices.first { $0.qr != nil }
+        default: break
+        }
+    }
+}
+
+extension Notification.Name {
+    static let vpnSyncOpenSettings = Notification.Name("vpnSyncOpenSettings")
+}
+
+/// Opens Settings when asked (test hook), using SwiftUI's own openSettings action.
+struct SettingsOpener: ViewModifier {
+    @Environment(\.openSettings) private var openSettings
+    func body(content: Content) -> some View {
+        content.onReceive(NotificationCenter.default.publisher(for: .vpnSyncOpenSettings)) { _ in openSettings() }
+    }
+}

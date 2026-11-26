@@ -1,5 +1,6 @@
-// Visual system: themes (full palettes, each with its own light/dark mode), the colour-field
-// backdrop behind the glass, glass helpers with macOS 14 fallbacks, the signal orb, avatars.
+// Visual system: Light and Dark palettes that sit with macOS (Automatic follows the system),
+// the soft backdrop behind the glass, glass helpers with macOS 14 fallbacks, the signal orb,
+// avatars. Accent colour = the user's macOS accent colour, like Apple's own apps.
 import SwiftUI
 import AppKit
 
@@ -10,32 +11,24 @@ struct Theme: Identifiable, Equatable {
     let name: String
     let dark: Bool
     let deep: Color       // backdrop base
-    let glowA: Color      // primary glow, also the accent
-    let glowB: Color      // secondary glow
-    let mist: Color       // highlights
-    let online: Color     // "connected"
-    let hue: Double       // accent hue, for harmonious avatar colours
-    var accent: Color { glowA }
+    let glowA: Color      // soft glow, one corner
+    let glowB: Color      // soft glow, the other corner
+    let online: Color     // "connected" (Apple system green)
     var scheme: ColorScheme { dark ? .dark : .light }
 
-    static let aurora = Theme(id: "aurora", name: "Aurora", dark: true,
-        deep: Color(hex: 0x0E2A3B), glowA: Color(hex: 0x2EC4B6), glowB: Color(hex: 0x7B61FF),
-        mist: Color(hex: 0xE8F1F2), online: Color(hex: 0x34D399), hue: 0.49)
-    static let sakura = Theme(id: "sakura", name: "Sakura", dark: true,
-        deep: Color(hex: 0x2A1730), glowA: Color(hex: 0xFF7AA8), glowB: Color(hex: 0xA58CFF),
-        mist: Color(hex: 0xFCE7F0), online: Color(hex: 0x7EE0B5), hue: 0.94)
-    static let glacier = Theme(id: "glacier", name: "Glacier", dark: false,
-        deep: Color(hex: 0xD3E6F3), glowA: Color(hex: 0x2F7FD0), glowB: Color(hex: 0x7FD4F2),
-        mist: Color(hex: 0xFFFFFF), online: Color(hex: 0x16A34A), hue: 0.58)
-    static let moss = Theme(id: "moss", name: "Moss", dark: true,
-        deep: Color(hex: 0x15241B), glowA: Color(hex: 0xD9B26A), glowB: Color(hex: 0x5E9F6B),
-        mist: Color(hex: 0xEEF3E6), online: Color(hex: 0x8BE38B), hue: 0.11)
-    static let graphite = Theme(id: "graphite", name: "Graphite", dark: true,
-        deep: Color(hex: 0x1C1D22), glowA: Color(hex: 0xA9B7CC), glowB: Color(hex: 0x4E5668),
-        mist: Color(hex: 0xF2F3F5), online: Color(hex: 0x34D399), hue: 0.60)
+    static let light = Theme(id: "light", name: "Light", dark: false,
+        deep: Color(hex: 0xEEF0F4), glowA: Color(hex: 0xD8E3F1), glowB: Color(hex: 0xE5E1EE),
+        online: Color(hex: 0x28A745))
+    static let dark = Theme(id: "dark", name: "Dark", dark: true,
+        deep: Color(hex: 0x16181D), glowA: Color(hex: 0x27303D), glowB: Color(hex: 0x2E2A3C),
+        online: Color(hex: 0x30D158))
+}
 
-    static let all: [Theme] = [aurora, sakura, glacier, moss, graphite]
-    static func named(_ id: String) -> Theme { all.first { $0.id == id } ?? aurora }
+/// Appearance choice: follow macOS, or force light or dark.
+enum AppearanceMode: String, CaseIterable, Identifiable {
+    case auto, light, dark
+    var id: String { rawValue }
+    var label: String { self == .auto ? "Automatic" : self == .light ? "Light" : "Dark" }
 }
 
 extension Color {
@@ -45,7 +38,7 @@ extension Color {
     }
 }
 
-private struct ThemeKey: EnvironmentKey { static let defaultValue = Theme.aurora }
+private struct ThemeKey: EnvironmentKey { static let defaultValue = Theme.dark }
 extension EnvironmentValues {
     var theme: Theme {
         get { self[ThemeKey.self] }
@@ -53,52 +46,80 @@ extension EnvironmentValues {
     }
 }
 
-/// Applies the chosen theme: environment, accent tint, and the app's light/dark appearance
-/// (app-wide, so sheets, Settings and the menu bar panel match).
+/// Applies the appearance app-wide (so sheets, Settings and the menu bar panel match) and puts
+/// the matching palette and backdrop behind the content.
 struct Themed<Content: View>: View {
-    @AppStorage("theme") private var themeID = Theme.aurora.id
+    @AppStorage("appearance") private var mode = AppearanceMode.auto.rawValue
+    @Environment(\.colorScheme) private var scheme
     var backdrop = true
     @ViewBuilder let content: Content
 
     var body: some View {
-        let t = Theme.named(themeID)
+        let t = resolved
         content
-            .tint(t.accent)
             .background { if backdrop { Backdrop().ignoresSafeArea() } }
-            .environment(\.theme, t)      // outermost, so the backdrop sees the theme too
-            .onAppear { applyAppearance(t) }
-            .onChange(of: themeID) { applyAppearance(Theme.named(themeID)) }
+            .environment(\.theme, t)      // outermost, so the backdrop sees it too
+            .onAppear { apply() }
+            .onChange(of: mode) { apply() }
     }
 
-    private func applyAppearance(_ t: Theme) {
-        NSApp.appearance = NSAppearance(named: t.dark ? .darkAqua : .aqua)
+    private var resolved: Theme {
+        switch AppearanceMode(rawValue: mode) ?? .auto {
+        case .light: return .light
+        case .dark: return .dark
+        case .auto: return scheme == .dark ? .dark : .light
+        }
+    }
+
+    private func apply() {
+        switch AppearanceMode(rawValue: mode) ?? .auto {
+        case .auto: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
     }
 }
 
 // MARK: - Backdrop
 
-/// The colour field behind the glass: deep base, two soft glows from opposite corners.
+/// What sits behind the glass: a live blur of whatever is behind the window (desktop, other
+/// windows), like macOS sidebars, with only a faint tint on top.
 struct Backdrop: View {
     @Environment(\.theme) private var t
     var body: some View {
+        ZStack {
+            WindowBlur()
+            tint.opacity(t.dark ? 0.22 : 0.18)
+        }
+    }
+
+    @ViewBuilder private var tint: some View {
         if #available(macOS 15.0, *) {
             MeshGradient(
                 width: 3, height: 3,
                 points: [[0, 0], [0.5, 0], [1, 0],
                          [0, 0.5], [0.58, 0.42], [1, 0.5],
                          [0, 1], [0.5, 1], [1, 1]],
-                colors: [t.deep, t.deep.mix(with: t.glowB, by: 0.25), t.deep.mix(with: t.glowB, by: 0.55),
-                         t.deep.mix(with: t.glowA, by: 0.12), t.deep, t.deep.mix(with: t.glowB, by: 0.2),
-                         t.deep.mix(with: t.glowA, by: 0.5), t.deep.mix(with: t.glowA, by: 0.2), t.deep],
+                colors: [t.deep, t.deep.mix(with: t.glowB, by: 0.4), t.deep.mix(with: t.glowB, by: 0.8),
+                         t.deep.mix(with: t.glowA, by: 0.2), t.deep, t.deep.mix(with: t.glowB, by: 0.3),
+                         t.deep.mix(with: t.glowA, by: 0.8), t.deep.mix(with: t.glowA, by: 0.3), t.deep],
                 smoothsColors: true)
         } else {
-            ZStack {
-                t.deep
-                RadialGradient(colors: [t.glowB.opacity(0.5), .clear], center: .topTrailing, startRadius: 0, endRadius: 520)
-                RadialGradient(colors: [t.glowA.opacity(0.45), .clear], center: .bottomLeading, startRadius: 0, endRadius: 520)
-            }
+            LinearGradient(colors: [t.glowB, t.deep, t.glowA], startPoint: .topTrailing, endPoint: .bottomLeading)
         }
     }
+}
+
+/// NSVisualEffectView blending with what's behind the window; follows light/dark by itself.
+struct WindowBlur: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = .sidebar
+        v.blendingMode = .behindWindow
+        v.state = .active
+        return v
+    }
+    func updateNSView(_ v: NSVisualEffectView, context: Context) {}
 }
 
 // MARK: - Glass
@@ -131,15 +152,35 @@ extension View {
     @ViewBuilder func glassButton(prominent: Bool = false) -> some View {
         if #available(macOS 26.0, *) {
             // .clear, not nil: a nil tint falls back to the system accent colour in active windows
-            if prominent { self.buttonStyle(.glassProminent) } else { self.buttonStyle(.glass).tint(.clear) }
+            if prominent { self.buttonStyle(.glassProminent).tint(.accentColor) } else { self.buttonStyle(.glass).tint(.clear) }
         } else {
-            if prominent { self.buttonStyle(.borderedProminent) } else { self.buttonStyle(.bordered).tint(nil) }
+            if prominent { self.buttonStyle(.borderedProminent).tint(.accentColor) } else { self.buttonStyle(.bordered) }
         }
     }
 
     /// A menu that shows its whole custom label (macOS otherwise reduces it to plain text).
     func fullLabelMenu() -> some View {
         self.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+    }
+}
+
+/// Ordinary buttons in sheets and Settings: clear glass (macOS 26+), bordered before that.
+struct ClearGlassButtonStyle: PrimitiveButtonStyle {
+    @ViewBuilder func makeBody(configuration: Configuration) -> some View {
+        if #available(macOS 26.0, *) {
+            Button(configuration).buttonStyle(.glass).tint(.clear)
+        } else {
+            Button(configuration).buttonStyle(.bordered)
+        }
+    }
+}
+
+extension View {
+    /// Sheet chrome: the backdrop behind it and clear-glass buttons (main actions opt in to
+    /// the accent with glassButton(prominent: true)).
+    func glassSheet() -> some View {
+        self.buttonStyle(ClearGlassButtonStyle())
+            .background { Backdrop().ignoresSafeArea() }
     }
 }
 
@@ -171,9 +212,9 @@ struct SignalOrb: View {
     var body: some View {
         ZStack {
             Circle()
-                .fill(AngularGradient(colors: [t.glowA, t.glowB, t.glowA.opacity(0.6), t.glowA], center: .center))
+                .fill(AngularGradient(colors: [Color.accentColor, Color.accentColor.opacity(0.35), t.glowB, Color.accentColor], center: .center))
                 .blur(radius: size * 0.18)
-                .opacity(live ? 0.85 : 0.25)
+                .opacity(live ? 0.6 : 0.15)
                 .scaleEffect(1.05)
             if ripple > 0 { RippleRing(color: t.online).id(ripple) }
             Circle()
@@ -225,9 +266,8 @@ struct DeviceAvatar: View {
 
     var body: some View {
         let h = Double(stableHash(name) % 1000) / 1000
-        let hue = (t.hue + (h - 0.5) * 0.18 + 1).truncatingRemainder(dividingBy: 1)
-        let top = Color(hue: hue, saturation: 0.50, brightness: t.dark ? 0.82 : 0.78)
-        let bottom = Color(hue: hue, saturation: 0.65, brightness: t.dark ? 0.58 : 0.62)
+        let top = Color(hue: h, saturation: 0.30, brightness: t.dark ? 0.66 : 0.74)
+        let bottom = Color(hue: h, saturation: 0.40, brightness: t.dark ? 0.46 : 0.56)
         ZStack {
             Circle().fill(LinearGradient(colors: [top, bottom], startPoint: .top, endPoint: .bottom))
             Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1)
@@ -273,43 +313,58 @@ struct TightLabel: LabelStyle {
     }
 }
 
-// MARK: - Theme picker
+// MARK: - Appearance picker
 
 struct ThemePicker: View {
-    @AppStorage("theme") private var themeID = Theme.aurora.id
+    @AppStorage("appearance") private var mode = AppearanceMode.auto.rawValue
     var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 14)], spacing: 14) {
-            ForEach(Theme.all) { t in
-                Button { themeID = t.id } label: { ThemeSwatch(theme: t, selected: t.id == themeID) }
+        HStack(spacing: 16) {
+            ForEach(AppearanceMode.allCases) { a in
+                Button { mode = a.rawValue } label: { AppearanceSwatch(mode: a, selected: a.rawValue == mode) }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("\(t.name) theme")
-                    .accessibilityAddTraits(t.id == themeID ? .isSelected : [])
+                    .accessibilityLabel("\(a.label) appearance")
+                    .accessibilityAddTraits(a.rawValue == mode ? .isSelected : [])
             }
         }
     }
 }
 
-private struct ThemeSwatch: View {
-    let theme: Theme
+private struct AppearanceSwatch: View {
+    let mode: AppearanceMode
     let selected: Bool
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ZStack(alignment: .bottomLeading) {
-                Backdrop().environment(\.theme, theme)
-                HStack(spacing: 5) {
-                    Circle().fill(theme.online).frame(width: 7, height: 7)
-                    Capsule().fill(.white.opacity(theme.dark ? 0.22 : 0.6)).frame(width: 46, height: 7)
+        VStack(spacing: 8) {
+            ZStack {
+                switch mode {
+                case .light: mini(.light)
+                case .dark: mini(.dark)
+                case .auto:
+                    HStack(spacing: 0) {
+                        mini(.light)
+                        mini(.dark)
+                    }
                 }
-                .padding(8)
-                .background(.ultraThinMaterial, in: Capsule())
-                .environment(\.colorScheme, theme.scheme)
-                .padding(10)
             }
-            .frame(height: 74)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(selected ? theme.accent : Color.primary.opacity(0.12), lineWidth: selected ? 2.5 : 1))
-            Text(theme.name).font(.callout.weight(selected ? .semibold : .regular))
+            .frame(width: 120, height: 78)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(selected ? Color.accentColor : Color.primary.opacity(0.15), lineWidth: selected ? 3 : 1))
+            Text(mode.label).font(.callout.weight(selected ? .semibold : .regular))
+        }
+    }
+
+    private func mini(_ t: Theme) -> some View {
+        ZStack(alignment: .topLeading) {
+            Backdrop().environment(\.theme, t)
+            VStack(alignment: .leading, spacing: 5) {
+                Capsule().fill(t.dark ? Color.white.opacity(0.22) : Color.white.opacity(0.9)).frame(width: 40, height: 8)
+                HStack(spacing: 4) {
+                    Circle().fill(t.online).frame(width: 7, height: 7)
+                    Capsule().fill(t.dark ? Color.white.opacity(0.14) : Color.black.opacity(0.10)).frame(width: 30, height: 6)
+                }
+                Capsule().fill(Color.accentColor).frame(width: 26, height: 8)
+            }
+            .padding(10)
         }
     }
 }
