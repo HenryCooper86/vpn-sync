@@ -46,6 +46,10 @@ func showMainWindow(_ openWindow: OpenWindowAction) {
 struct MenuBarPanel: View {
     @ObservedObject var m: Model
     @Environment(\.openWindow) private var openWindow
+    /// Server waiting for removal confirmation (inline: alerts tend to close menu bar panels).
+    @State private var confirmRemove: String?
+    @State private var removeError: (server: String, message: String)?
+    @State private var removing = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -58,10 +62,14 @@ struct MenuBarPanel: View {
             }
             if m.servers.isEmpty {
                 Text("No servers yet.").foregroundStyle(.secondary)
-            } else if !m.monitoring {
-                Text("Live monitoring is off.").foregroundStyle(.secondary)
-                Button("Turn On Live Monitoring") { m.setMonitoring(true) }
             } else {
+                if !m.monitoring {
+                    HStack {
+                        Text("Live monitoring is off.").foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Turn On") { m.setMonitoring(true) }
+                    }
+                }
                 ForEach(m.servers, id: \.self) { s in serverSection(s) }
             }
             Divider()
@@ -90,9 +98,37 @@ struct MenuBarPanel: View {
                     .buttonStyle(.plain)
                     .help("Open \(s) in VPN Sync")
                 Spacer()
-                Text(linkText(w, count: online.count)).font(.caption).foregroundStyle(.secondary)
+                if m.monitoring {
+                    Text(linkText(w, count: online.count)).font(.caption).foregroundStyle(.secondary)
+                }
+                Button {
+                    removeError = nil
+                    confirmRemove = (confirmRemove == s ? nil : s)
+                } label: { Image(systemName: "trash") }
+                    .buttonStyle(.borderless)
+                    .disabled(removing)
+                    .help("Remove \(s) from VPN Sync")
             }
-            if w?.link == .live {
+            if confirmRemove == s {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Remove \(s) from VPN Sync?").font(.callout.weight(.semibold))
+                    Text("Deletes its settings, the copy of its key and its pinned host key on this Mac. The server keeps running, its devices keep working, and its Desktop folder is kept.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        if removing { ProgressView().controlSize(.small) }
+                        Spacer()
+                        Button("Cancel") { confirmRemove = nil }.disabled(removing)
+                        Button("Remove", role: .destructive) { remove(s) }
+                            .buttonStyle(.borderedProminent).tint(.red).disabled(removing)
+                    }
+                }
+                .padding(8)
+                .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+            }
+            if let e = removeError, e.server == s {
+                Text(e.message).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+            }
+            if m.monitoring && w?.link == .live {
                 if online.isEmpty {
                     Text("No devices online").font(.caption).foregroundStyle(.secondary).padding(.leading, 13)
                 } else {
@@ -107,6 +143,25 @@ struct MenuBarPanel: View {
                         .padding(.leading, 6)
                     }
                 }
+            }
+        }
+    }
+
+    private func remove(_ s: String) {
+        removing = true
+        Task {
+            let (code, out) = await m.cli(["server", "remove", s], label: "Removing \(s)…")
+            removing = false
+            if code == 0 {
+                confirmRemove = nil
+                let wasSelected = m.server == s
+                m.reloadServers()
+                if wasSelected && !m.server.isEmpty { await m.check() }
+            } else {
+                confirmRemove = nil
+                // e.g. "Frankfurt connects through Tokyo; change that first"
+                let msg = out.split(separator: "\n").last.map { String($0).replacingOccurrences(of: "vpn-sync: ", with: "") }
+                removeError = (s, "Not removed: \(msg ?? "unknown error").")
             }
         }
     }
