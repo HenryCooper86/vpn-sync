@@ -48,6 +48,7 @@ struct TrafficView: View {
     @State private var hoverDay: DayTraffic?
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .top, spacing: 12) {
@@ -66,10 +67,17 @@ struct TrafficView: View {
                 }
                 Text("Today's figures count from when VPN Sync started watching \(m.server) and reset at midnight. Server totals come from the server itself.")
                     .font(.caption).foregroundStyle(.secondary)
+                    .id("bottom")
             }
             .padding(2)
         }
         .scrollIndicators(.never)
+        .onAppear {   // test hook: VPNSYNC_TRAFFIC_SCROLL=bottom, for screenshots
+            if ProcessInfo.processInfo.environment["VPNSYNC_TRAFFIC_SCROLL"] == "bottom" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { proxy.scrollTo("bottom", anchor: .bottom) }
+            }
+        }
+        }
     }
 
     // MARK: donut
@@ -370,23 +378,37 @@ struct TrafficView: View {
 
     // MARK: sparkline
 
-    /// The device's download speed over the last 15 minutes.
+    /// The device's speed over the last 15 minutes, mirrored like the main chart:
+    /// download (blue) above the centre line, upload (orange) below.
     @ViewBuilder private func sparkline(_ name: String) -> some View {
         let h = m.deviceHistory(name)
         if h.count >= 2 {
-            Chart(h) { p in
-                LineMark(x: .value("Time", p.time), y: .value("Speed", p.down))
-                    .foregroundStyle(TrafficColor.down(t.dark))
-                    .lineStyle(StrokeStyle(lineWidth: 1.5))
-                    .interpolationMethod(.monotone)
+            let top = max(h.map { max($0.down, $0.up) }.max() ?? 1, 1)
+            Chart {
+                ForEach(h) { p in
+                    LineMark(x: .value("Time", p.time), y: .value("Speed", p.down), series: .value("Direction", "Download"))
+                        .foregroundStyle(TrafficColor.down(t.dark))
+                        .lineStyle(StrokeStyle(lineWidth: 1.5))
+                        .interpolationMethod(.monotone)
+                    LineMark(x: .value("Time", p.time), y: .value("Speed", -p.up), series: .value("Direction", "Upload"))
+                        .foregroundStyle(TrafficColor.up(t.dark))
+                        .lineStyle(StrokeStyle(lineWidth: 1.5))
+                        .interpolationMethod(.monotone)
+                }
+                RuleMark(y: .value("Zero", 0)).foregroundStyle(Color.primary.opacity(0.15)).lineStyle(StrokeStyle(lineWidth: 0.5))
             }
             .chartXAxis(.hidden)
             .chartYAxis(.hidden)
-            .chartYScale(domain: 0...max(h.map(\.down).max() ?? 1, 1))
-            .frame(width: 70, height: 18)
-            .help("Download speed, last 15 minutes")
-            .accessibilityLabel("Download speed of \(name), last 15 minutes")
+            .chartYScale(domain: -top...top)
+            .frame(width: 70, height: 22)
+            .help(sparkHelp(h))
+            .accessibilityLabel("Speed of \(name), last 15 minutes: download above the line, upload below")
         }
+    }
+
+    private func sparkHelp(_ h: [TrafficPoint]) -> String {
+        let d = h.map(\.down).max() ?? 0, u = h.map(\.up).max() ?? 0
+        return "Last 15 minutes. Download (blue, above) peak \(formatRate(d)); upload (orange, below) peak \(formatRate(u))."
     }
 
     // MARK: figures

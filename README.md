@@ -19,7 +19,7 @@ A macOS app and command-line tool for running your own OpenVPN + WireGuard serve
 - **Traffic:** a Traffic tab with today's VPN data (donut), a mirrored speed chart
   (download above the line, upload below; 5 min / 15 min / 1 h; MB/s or Mbit/s), devices
   online over time, the server's traffic per day for 30 days (`vnstat`), peak speed,
-  connections, most devices online at once, and devices (with speed sparklines) and protocols
+  connections, most devices online at once, and devices (with download/upload sparklines) and protocols
   ranked by data. Star a device to pin it to the top.
 - **Device types:** what each OpenVPN client reports (iPhone, Android, Mac, Windows, Linux,
   and the app version) is read from the server log; WireGuard devices are guessed from their
