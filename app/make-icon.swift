@@ -1,6 +1,6 @@
-// Renders the 1024×1024 app icon: a frosted glass shield on a midnight tile; inside it, nested
-// shield outlines narrow like a tunnel toward a glowing keyhole (VPN + security).
-// Usage: `swift make-icon.swift out.png`
+// Renders the 1024×1024 app icon: a frosted glass shield on a midnight tile with a glowing key
+// inside (Lucide's key-round, the same icon family as the app). VPN + security.
+// Usage: `swift make-icon.swift out.png` (run from app/, reads lucide/key-round.svg)
 import AppKit
 import CoreGraphics
 
@@ -76,45 +76,39 @@ ctx.setShadow(offset: CGSize(width: 0, height: -20), blur: 44, color: CGColor(co
 ctx.addPath(sp); ctx.setFillColor(white(0.10)); ctx.fillPath()
 ctx.restoreGState()
 
-let focus = CGPoint(x: sr.midX, y: sr.minY + sr.height * 0.46)   // where the tunnel leads: the keyhole
+let focus = CGPoint(x: sr.midX, y: sr.minY + sr.height * 0.50)
 ctx.saveGState()
 ctx.addPath(sp); ctx.clip()
 // frosted body, brighter at the top
 ctx.drawLinearGradient(grad([white(0.30), white(0.10), white(0.16)], [0, 0.55, 1]),
                        start: CGPoint(x: sr.midX, y: sr.maxY), end: CGPoint(x: sr.midX, y: sr.minY), options: [])
-// light at the end of the tunnel
-ctx.drawRadialGradient(grad([rgb(0x5EF0C8, 0.55), rgb(0x3FA9F5, 0.18), rgb(0x3FA9F5, 0)], [0, 0.45, 1]),
-                       startCenter: focus, startRadius: 0, endCenter: focus, endRadius: 280, options: [])
-// tunnel: nested shields shrinking toward the keyhole
-let rings = 5
-for i in 1...rings {
-    let f = CGFloat(i) / CGFloat(rings + 1)
-    let k = 1 - 0.82 * (1 - pow(1 - f, 1.9))
-    ctx.addPath(scaled(sp, by: k, toward: focus))
-    ctx.setStrokeColor(white(0.55 - 0.42 * f))
-    ctx.setLineWidth(12 - 8 * f)
-    ctx.setLineJoin(.round)
-    ctx.strokePath()
-}
+// soft light behind the key
+ctx.drawRadialGradient(grad([rgb(0x5EF0C8, 0.42), rgb(0x3FA9F5, 0.14), rgb(0x3FA9F5, 0)], [0, 0.5, 1]),
+                       startCenter: focus, startRadius: 0, endCenter: focus, endRadius: 300, options: [])
 ctx.restoreGState()
 
-// Keyhole of light
-let kh = CGMutablePath()
-kh.addEllipse(in: CGRect(x: focus.x - 36, y: focus.y - 6, width: 72, height: 72))
-kh.move(to: CGPoint(x: focus.x - 18, y: focus.y + 6))
-kh.addLine(to: CGPoint(x: focus.x + 18, y: focus.y + 6))
-kh.addLine(to: CGPoint(x: focus.x + 29, y: focus.y - 80))
-kh.addQuadCurve(to: CGPoint(x: focus.x - 29, y: focus.y - 80), control: CGPoint(x: focus.x, y: focus.y - 89))
-kh.closeSubpath()
+// The key: Lucide key-round, filled with a mint-to-cyan gradient, glowing
+let keySize: CGFloat = 380
+let keyRect = CGRect(x: focus.x - keySize / 2, y: focus.y - keySize / 2, width: keySize, height: keySize)
+let keyImage: CGImage = {
+    let px = Int(keySize * 2)
+    let k = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8, bytesPerRow: 0,
+                      space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    let svg = NSImage(contentsOfFile: "lucide/key-round.svg")!
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(cgContext: k, flipped: false)
+    svg.draw(in: NSRect(x: 0, y: 0, width: px, height: px))
+    NSGraphicsContext.restoreGraphicsState()
+    k.setBlendMode(.sourceIn)                       // keep the key's shape, replace its colour
+    k.drawLinearGradient(grad([rgb(0xB8FFE9), rgb(0x5EF0C8), rgb(0x3FA9F5)], [0, 0.45, 1]),
+                         start: CGPoint(x: CGFloat(px), y: CGFloat(px)), end: CGPoint(x: 0, y: 0), options: [])
+    return k.makeImage()!
+}()
 ctx.saveGState()
-ctx.setShadow(offset: .zero, blur: 40, color: rgb(0x5EF0C8, 1))
-ctx.addPath(kh); ctx.setFillColor(rgb(0x8AF7D6)); ctx.fillPath()
+ctx.setShadow(offset: .zero, blur: 36, color: rgb(0x5EF0C8, 0.95))
+ctx.draw(keyImage, in: keyRect)
 ctx.restoreGState()
-ctx.saveGState()
-ctx.addPath(kh); ctx.clip()
-ctx.drawLinearGradient(grad([white(0.85), rgb(0x8AF7D6, 0)], [0, 1]),
-                       start: CGPoint(x: focus.x, y: focus.y + 56), end: CGPoint(x: focus.x, y: focus.y - 20), options: [])
-ctx.restoreGState()
+ctx.draw(keyImage, in: keyRect)
 
 // Shield rim: bright at the top left, fading round
 ctx.saveGState()

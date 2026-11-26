@@ -506,7 +506,7 @@ struct LiveToggle: View {
                 .glassButton()
                 .help(m.monitoring ? "Live monitoring of all servers is on. Click to stop." : "Show who is connected, live")
                 Button { m.setNotify(!m.notify) } label: {
-                    Image(systemName: m.notify ? "bell.fill" : "bell.slash")
+                    LucideIcon(m.notify ? "bell" : "bell-off")
                 }
                 .glassButton()
                 .disabled(!m.monitoring)
@@ -553,7 +553,7 @@ struct ServicesBar: View {
                 Divider()
                 Button("Reboot Server…") { m.confirmService = ServiceAction(server: m.server, vpn: "reboot", action: "reboot") }
             } label: {
-                Label("Power", systemImage: "power").font(.system(.callout, design: .rounded).weight(.medium))
+                Label("Power", lucide: "power").font(.system(.callout, design: .rounded).weight(.medium))
             }
             .fullLabelMenu()
             .padding(.horizontal, 12).padding(.vertical, 7)

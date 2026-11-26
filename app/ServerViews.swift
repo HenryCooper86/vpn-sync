@@ -151,7 +151,7 @@ struct ServerListSheet: View {
                 ForEach(m.servers, id: \.self) { name in
                     let info = ServerInfo(name: name)
                     HStack(spacing: 10) {
-                        Image(systemName: name == m.server ? "checkmark.circle.fill" : "server.rack")
+                        LucideIcon(name == m.server ? "circle-check" : "server", size: 16)
                             .foregroundStyle(name == m.server ? Color.accentColor : .secondary)
                             .frame(width: 20)
                         VStack(alignment: .leading, spacing: 2) {
@@ -185,7 +185,7 @@ struct ServerListSheet: View {
                         Button("Edit…") { editing = ServerRef(name: name) }
                         Button("Set Up…") { installing = ServerRef(name: name) }
                             .help("Install or repair OpenVPN, WireGuard and the server tools")
-                        Button { removing = ServerRef(name: name) } label: { Image(systemName: "trash") }
+                        Button { removing = ServerRef(name: name) } label: { LucideIcon("trash-2") }
                             .help("Remove from VPN Sync")
                     }
                     .controlSize(.small)
@@ -197,7 +197,7 @@ struct ServerListSheet: View {
             .disabled(m.busy)
             if let error { Text(error).font(.callout).foregroundStyle(.red) }
             HStack {
-                Button { adding = true } label: { Label("Add Server…", systemImage: "plus") }
+                Button { adding = true } label: { Label("Add Server…", lucide: "plus") }
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.defaultAction).glassButton(prominent: true)
             }
@@ -576,13 +576,13 @@ struct InstallPanel: View {
                     .font(.callout)
                 OutputView(text: m.opLog, height: 260)
             case .finished:
-                Label("\(name) is ready.", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.headline)
+                Label("\(name) is ready.", lucide: "circle-check").foregroundStyle(.green).font(.headline)
                 Text("Its profiles were copied to your Desktop. Make sure the VPN ports are open in the server's firewall (\(portSummary)).")
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 OutputView(text: m.opLog, height: 160)
                 HStack { Spacer(); Button("Done") { m.selectServer(name); onDone() }.keyboardShortcut(.defaultAction).glassButton(prominent: true) }
             case .failed:
-                Label("Setup didn't finish.", systemImage: "xmark.octagon.fill").foregroundStyle(.red).font(.headline)
+                Label("Setup didn't finish.", lucide: "octagon-x").foregroundStyle(.red).font(.headline)
                 if let error { Text(error).font(.callout).fixedSize(horizontal: false, vertical: true) }
                 OutputView(text: m.opLog, height: 200)
                 HStack {

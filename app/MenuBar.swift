@@ -8,7 +8,7 @@ struct MenuBarLabel: View {
     var body: some View {
         let n = m.onlineEverywhere
         HStack(spacing: 3) {
-            Image(systemName: icon)
+            Lucide.image(icon, size: 16)
             if m.monitoring { Text("\(n)").monospacedDigit() }
         }
         .help("VPN Sync: \(n) device\(n == 1 ? "" : "s") online")
@@ -25,10 +25,10 @@ struct MenuBarLabel: View {
         else { try? line.write(to: url) }
     }
     private var icon: String {
-        if !m.monitoring { return "shield.slash" }
+        if !m.monitoring { return "shield-off" }
         let anyLive = m.watchers.values.contains { $0.link == .live }
         if !anyLive { return "shield" }
-        return m.onlineEverywhere > 0 ? "shield.lefthalf.filled" : "shield"
+        return m.onlineEverywhere > 0 ? "shield-check" : "shield"
     }
 }
 
@@ -74,7 +74,7 @@ struct MenuBarPanel: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
             HStack {
-                Button { showMainWindow(openWindow) } label: { Label("Open VPN Sync", systemImage: "macwindow") }
+                Button { showMainWindow(openWindow) } label: { Label("Open VPN Sync", lucide: "app-window") }
                     .glassButton(prominent: true)
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }.glassButton()
@@ -125,7 +125,7 @@ struct MenuBarPanel: View {
                 Button {
                     removeError = nil; confirmRemove = nil
                     if renaming == s { renaming = nil } else { renaming = s; newName = s; nameFocused = true }
-                } label: { Image(systemName: "pencil") }
+                } label: { LucideIcon("pencil") }
                     .buttonStyle(.borderless).foregroundStyle(.secondary)
                     .disabled(removing)
                     .help("Rename \(s)")
@@ -133,7 +133,7 @@ struct MenuBarPanel: View {
                 Button {
                     removeError = nil; renaming = nil
                     confirmRemove = (confirmRemove == s ? nil : s)
-                } label: { Image(systemName: "trash") }
+                } label: { LucideIcon("trash-2") }
                     .buttonStyle(.borderless).foregroundStyle(.secondary)
                     .disabled(removing)
                     .help("Remove \(s) from VPN Sync")
@@ -196,8 +196,8 @@ struct MenuBarPanel: View {
                                 Spacer(minLength: 6)
                                 if let r = d.rate {
                                     VStack(alignment: .trailing, spacing: 0) {
-                                        Label(formatRate(r.down), systemImage: "arrow.down")
-                                        Label(formatRate(r.up), systemImage: "arrow.up").foregroundStyle(.secondary)
+                                        Label(formatRate(r.down), lucide: "arrow-down", size: 10)
+                                        Label(formatRate(r.up), lucide: "arrow-up", size: 10).foregroundStyle(.secondary)
                                     }
                                     .font(.system(size: 10, weight: .medium, design: .rounded))
                                     .monospacedDigit()

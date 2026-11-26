@@ -17,11 +17,11 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             AppearanceSettings()
-                .tabItem { Label("Appearance", systemImage: "paintpalette") }
+                .tabItem { Label { Text("Appearance") } icon: { Lucide.image("palette", size: 18) } }
             GeneralSettings()
-                .tabItem { Label("General", systemImage: "gearshape") }
+                .tabItem { Label { Text("General") } icon: { Lucide.image("settings", size: 18) } }
             LightsailSettings()
-                .tabItem { Label("Lightsail", systemImage: "cloud") }
+                .tabItem { Label { Text("Lightsail") } icon: { Lucide.image("cloud", size: 18) } }
         }
         .frame(width: 560)
         .buttonStyle(ClearGlassButtonStyle())

@@ -89,7 +89,7 @@ struct Backdrop: View {
     var body: some View {
         ZStack {
             WindowBlur()
-            tint.opacity(t.dark ? 0.22 : 0.18)
+            tint.opacity(t.dark ? 0.10 : 0.08)
         }
     }
 
@@ -111,15 +111,34 @@ struct Backdrop: View {
 }
 
 /// NSVisualEffectView blending with what's behind the window; follows light/dark by itself.
+/// It also makes its window non-opaque, so nothing solid sits behind the blur.
 struct WindowBlur: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
-        let v = NSVisualEffectView()
-        v.material = .sidebar
+        let v = SeeThroughBlur()
         v.blendingMode = .behindWindow
         v.state = .active
         return v
     }
     func updateNSView(_ v: NSVisualEffectView, context: Context) {}
+}
+
+final class SeeThroughBlur: NSVisualEffectView {
+    /// The lightest blurs macOS offers: HUD in dark mode, popover in light mode.
+    private func pickMaterial() {
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        material = dark ? .hudWindow : .popover
+    }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        pickMaterial()
+    }
+    override func viewDidMoveToWindow() {
+        pickMaterial()
+        super.viewDidMoveToWindow()
+        guard let w = window, !(w is NSPanel) else { return }
+        w.isOpaque = false
+        w.backgroundColor = .clear
+    }
 }
 
 // MARK: - Glass

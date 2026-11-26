@@ -452,16 +452,16 @@ struct StatusPill: View {
     var body: some View {
         let (text, color, icon): (String, Color, String) = {
             switch status {
-            case .idle: return ("Not checked", .secondary, "circle.dotted")
-            case .working(let t): return (t, .blue, "arrow.triangle.2.circlepath")
-            case .upToDate: return ("Up to date", .green, "checkmark.circle.fill")
-            case .needsSync: return ("Sync needed", .orange, "exclamationmark.circle.fill")
-            case .unreachable: return ("Unreachable", .red, "wifi.exclamationmark")
-            case .needsInstall: return ("Setup needed", .orange, "wrench.and.screwdriver.fill")
-            case .failed: return ("Error", .red, "xmark.octagon.fill")
+            case .idle: return ("Not checked", .secondary, "circle-dashed")
+            case .working(let t): return (t, .blue, "refresh-cw")
+            case .upToDate: return ("Up to date", .green, "circle-check")
+            case .needsSync: return ("Sync needed", .orange, "circle-alert")
+            case .unreachable: return ("Unreachable", .red, "wifi-off")
+            case .needsInstall: return ("Setup needed", .orange, "wrench")
+            case .failed: return ("Error", .red, "octagon-x")
             }
         }()
-        Label(text, systemImage: icon)
+        Label(text, lucide: icon)
             .font(.system(.callout, design: .rounded).weight(.semibold))
             .foregroundStyle(color)
             .lineLimit(1)
@@ -512,8 +512,8 @@ struct DeviceRow: View {
             Spacer(minLength: 8)
             if let r = m.rates[device.name], m.isOnline(device.name) {
                 VStack(alignment: .trailing, spacing: 1) {
-                    Label(formatRate(r.down), systemImage: "arrow.down")
-                    Label(formatRate(r.up), systemImage: "arrow.up").foregroundStyle(.secondary)
+                    Label(formatRate(r.down), lucide: "arrow-down", size: 10)
+                    Label(formatRate(r.up), lucide: "arrow-up", size: 10).foregroundStyle(.secondary)
                 }
                 .font(.system(size: 11, weight: .medium, design: .rounded))
                 .monospacedDigit()
@@ -521,7 +521,7 @@ struct DeviceRow: View {
                 .help("Download and upload speed of this device")
             }
             if device.qr != nil && !m.selecting {
-                Button { m.qrDevice = device } label: { Image(systemName: "qrcode") }
+                Button { m.qrDevice = device } label: { LucideIcon("qr-code") }
                     .glassButton()
                     .help("Show the WireGuard QR code to scan on a phone or TV")
                     .accessibilityLabel("Show QR code for \(device.name)")
@@ -537,7 +537,7 @@ struct DeviceRow: View {
                     Divider()
                     Button("Remove Device…", role: .destructive) { m.confirmRemoval = [device.name] }
                         .disabled(m.busy)
-                } label: { Image(systemName: "ellipsis").foregroundStyle(.secondary).frame(width: 22, height: 22) }
+                } label: { LucideIcon("ellipsis").foregroundStyle(.secondary).frame(width: 22, height: 22) }
                     .fullLabelMenu()
                     .accessibilityLabel("More for \(device.name)")
             }
@@ -869,9 +869,7 @@ struct ContentView: View {
                     } else {
                         Menu {
                             ForEach(m.servers, id: \.self) { s in
-                                Button { m.selectServer(s) } label: {
-                                    if s == m.server { Label(s, systemImage: "checkmark") } else { Text(s) }
-                                }
+                                Toggle(s, isOn: Binding(get: { s == m.server }, set: { if $0 { m.selectServer(s) } }))
                             }
                             Divider()
                             Button("Add Server…") { m.showAddServer = true }
@@ -879,7 +877,7 @@ struct ContentView: View {
                         } label: {
                             HStack(spacing: 6) {
                                 Text(m.server).font(.system(size: 24, weight: .bold, design: .rounded))
-                                Image(systemName: "chevron.down").font(.system(size: 12, weight: .bold)).foregroundStyle(.secondary)
+                                LucideIcon("chevron-down").font(.system(size: 12, weight: .bold)).foregroundStyle(.secondary)
                             }
                         }
                         .fullLabelMenu()
@@ -887,7 +885,7 @@ struct ContentView: View {
                         .disabled(m.busy)
                         .help("Switch server")
                     }
-                    Button { m.showServers = true } label: { Image(systemName: "server.rack") }
+                    Button { m.showServers = true } label: { LucideIcon("server") }
                         .buttonStyle(.borderless)
                         .foregroundStyle(.secondary)
                         .help("Manage servers")
@@ -901,7 +899,7 @@ struct ContentView: View {
                         Button {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(ip, forType: .string)
-                        } label: { Image(systemName: "doc.on.doc").font(.caption) }
+                        } label: { LucideIcon("copy").font(.caption) }
                             .buttonStyle(.borderless).foregroundStyle(.secondary).help("Copy IP")
                     }
                 }
@@ -915,10 +913,10 @@ struct ContentView: View {
                 StatusPill(status: m.status)
                 HStack(spacing: 8) {
                     if m.busy { ProgressView().controlSize(.small) }
-                    Button { Task { await m.check() } } label: { Label("Check", systemImage: "magnifyingglass") }
+                    Button { Task { await m.check() } } label: { Label("Check", lucide: "search") }
                         .glassButton()
                         .disabled(m.busy || m.server.isEmpty)
-                    Button { Task { await m.sync() } } label: { Label("Sync Now", systemImage: "arrow.triangle.2.circlepath") }
+                    Button { Task { await m.sync() } } label: { Label("Sync Now", lucide: "refresh-cw") }
                         .glassButton(prominent: true)
                         .keyboardShortcut("r", modifiers: .command)
                         .disabled(m.busy || m.server.isEmpty)
@@ -1009,7 +1007,7 @@ struct ContentView: View {
                 Button(role: .destructive) {
                     m.confirmRemoval = m.devices.map(\.name).filter { m.selection.contains($0) }
                 } label: {
-                    Label("Remove \(m.selection.count)…", systemImage: "trash")
+                    Label("Remove \(m.selection.count)…", lucide: "trash-2")
                 }
                 .tint(.red)
                 .glassButton(prominent: true)
@@ -1017,17 +1015,17 @@ struct ContentView: View {
             } else {
                 GlassGroup(spacing: 6) {
                     HStack(spacing: 6) {
-                        Button { m.showAddDevice = true } label: { Label("Add Device", systemImage: "plus") }
+                        Button { m.showAddDevice = true } label: { Label("Add Device", lucide: "plus") }
                             .glassButton(prominent: true)
-                        Button { m.showBatchAdd = true } label: { Label("Batch Add", systemImage: "plus.square.on.square") }
+                        Button { m.showBatchAdd = true } label: { Label("Batch Add", lucide: "copy-plus") }
                             .labelStyle(.iconOnly).glassButton()
                             .help("Add several devices at once")
-                        Button { m.selection = []; m.selecting = true } label: { Label("Batch Remove", systemImage: "trash") }
+                        Button { m.selection = []; m.selecting = true } label: { Label("Batch Remove", lucide: "trash-2") }
                             .labelStyle(.iconOnly).glassButton()
                             .disabled(m.devices.isEmpty)
                             .help("Choose devices to remove")
                         if let f = m.folder {
-                            Button { NSWorkspace.shared.open(f) } label: { Label("Open Folder", systemImage: "folder") }
+                            Button { NSWorkspace.shared.open(f) } label: { Label("Open Folder", lucide: "folder") }
                                 .labelStyle(.iconOnly).glassButton()
                                 .help("Open ~/Desktop/\(f.lastPathComponent)")
                         }
@@ -1108,7 +1106,7 @@ struct ContentView: View {
                     if !m.events.isEmpty {
                         Text("\(m.events.count)").font(.system(.caption, design: .rounded)).foregroundStyle(.secondary)
                     }
-                    Image(systemName: "chevron.right")
+                    LucideIcon("chevron-right")
                         .font(.system(size: 10, weight: .bold))
                         .rotationEffect(.degrees(showActivity ? 90 : 0))
                         .foregroundStyle(.secondary)

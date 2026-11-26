@@ -37,8 +37,9 @@ server bundle in `~/.local/share/vpn-sync/server`, and `~/Applications/VPN Sync.
 
 ## Look and feel
 
-Liquid Glass panels and buttons on translucent windows that blur what's behind them, with
-material fallbacks on macOS 14–15. Settings → Appearance: Automatic (follows macOS), Light or
+Liquid Glass panels and buttons on see-through windows that blur what's behind them, with
+material fallbacks on macOS 14–15. Icons are [Lucide](https://lucide.dev) (ISC licence),
+bundled as SVGs in `app/lucide/`. Settings → Appearance: Automatic (follows macOS), Light or
 Dark; buttons use your macOS accent colour. The header's signal orb shows how many devices are
 online and ripples when one connects (not with Reduce Motion). The app icon, a glass shield
 with a tunnel narrowing to a lit keyhole, is drawn by `app/make-icon.swift`.

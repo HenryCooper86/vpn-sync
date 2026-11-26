@@ -7,8 +7,10 @@ rm -rf build
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build/AppIcon.iconset
 
 swiftc -swift-version 5 -O -parse-as-library -target arm64-apple-macos14.0 \
-	-o "$APP/Contents/MacOS/VPNSync" VPNSync.swift ServerViews.swift LiveMonitor.swift MenuBar.swift SettingsView.swift Theme.swift
+	-o "$APP/Contents/MacOS/VPNSync" VPNSync.swift ServerViews.swift LiveMonitor.swift MenuBar.swift SettingsView.swift Theme.swift Icons.swift
 cp Info.plist "$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/Resources/lucide"
+cp lucide/*.svg "$APP/Contents/Resources/lucide/"
 
 swift make-icon.swift build/icon-1024.png
 for s in 16 32 128 256 512; do
