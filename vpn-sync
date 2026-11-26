@@ -18,6 +18,11 @@
 #   vpn-sync service <server> <openvpn|wireguard|all> <start|stop|restart|status>
 #   vpn-sync reboot <server>              reboot the whole server
 #
+# Lightsail lookup (finds a server's new IP after a stop/start):
+#   vpn-sync aws set                      save a read-only AWS key in the Keychain
+#                                         (asks, or reads "ID<newline>SECRET" from stdin)
+#   vpn-sync aws status | remove | ip <server>
+#
 # Servers:
 #   vpn-sync server list
 #   vpn-sync server hostkey --host H [--port N] | --jump SERVER --private-ip IP
@@ -141,16 +146,84 @@ ssh_run() {
 
 sudo_prefix() { [ "$S_USER" = root ] && echo "" || echo "sudo -n "; }
 
+# ---------------------------------------------------------------- Lightsail API (current IP)
+# A read-only AWS key (lightsail:GetInstance) lets vpn-sync look up a server's current public
+# IP after a stop/start. It lives in the login Keychain, never in files or process arguments.
+KC_SERVICE="vpn-sync-lightsail"
+
+aws_key_id() { security find-generic-password -s "$KC_SERVICE" 2>/dev/null | sed -n 's/^ *"acct"<blob>="\(.*\)"$/\1/p' || true; }
+aws_secret() { security find-generic-password -s "$KC_SERVICE" -w 2>/dev/null || true; }
+
+# lightsail_ip REGION INSTANCE -> current public IPv4 (empty on failure; reason on stderr)
+lightsail_ip() {
+	local region="$1" inst="$2" id secret out ip
+	if command -v aws >/dev/null 2>&1 && aws configure get aws_access_key_id >/dev/null 2>&1; then
+		ip=$(aws lightsail get-instance --region "$region" --instance-name "$inst" \
+			--query 'instance.publicIpAddress' --output text 2>/dev/null || true)
+		[[ "$ip" =~ $IPV4_RE ]] && { echo "$ip"; return 0; }
+	fi
+	id=$(aws_key_id); [ -n "$id" ] || return 1
+	secret=$(aws_secret); [ -n "$secret" ] || return 1
+	out=$(printf 'user = "%s:%s"\n' "$id" "$secret" | curl -sS -m 15 -K - \
+		--aws-sigv4 "aws:amz:$region:lightsail" \
+		-H "X-Amz-Target: Lightsail_20161128.GetInstance" -H "Content-Type: application/x-amz-json-1.1" \
+		--data "{\"instanceName\":\"$inst\"}" "https://lightsail.$region.amazonaws.com/" 2>&1) || { echo "lightsail: $out" >&2; return 1; }
+	ip=$(printf '%s' "$out" | plutil -extract instance.publicIpAddress raw -o - - 2>/dev/null || true)
+	if [[ "$ip" =~ $IPV4_RE ]]; then echo "$ip"; return 0; fi
+	echo "lightsail: $(printf '%s' "$out" | plutil -extract message raw -o - - 2>/dev/null || printf '%s' "$out" | head -c 200)" >&2
+	return 1
+}
+
+aws_cmd() {
+	case "${1:-}" in
+		set)
+			local id secret
+			if [ -t 0 ]; then
+				printf 'Access key ID: '; read -r id
+				printf 'Secret access key: '; stty -echo; read -r secret; stty echo; echo
+			else
+				IFS= read -r id; IFS= read -r secret
+			fi
+			[[ "$id" =~ ^A[KS]IA[A-Z0-9]{12,20}$ ]] || die "that doesn't look like an AWS access key ID (AKIA…)"
+			[[ "$secret" =~ ^[A-Za-z0-9/+=]{30,60}$ ]] || die "that doesn't look like an AWS secret access key"
+			security delete-generic-password -s "$KC_SERVICE" >/dev/null 2>&1 || true
+			# via `security -i` so the secret isn't in any process's arguments
+			printf 'add-generic-password -s %s -a %s -l "VPN Sync Lightsail access" -w %s\n' "$KC_SERVICE" "$id" "$secret" \
+				| security -i >/dev/null || die "couldn't save to the Keychain"
+			info "saved Lightsail access key $id to the Keychain"
+			;;
+		status)
+			local id; id=$(aws_key_id)
+			if [ -n "$id" ]; then echo "KEY=$id"; else echo "KEY=none"; fi
+			command -v aws >/dev/null 2>&1 && aws configure get aws_access_key_id >/dev/null 2>&1 && echo "AWS_CLI=configured"
+			return 0
+			;;
+		remove)
+			security delete-generic-password -s "$KC_SERVICE" >/dev/null 2>&1 && info "removed the Lightsail key from the Keychain" || info "no Lightsail key saved"
+			;;
+		ip)
+			[ -n "${2:-}" ] || die "usage: vpn-sync aws ip <server>"
+			load_server "$2"
+			[ -n "$S_REGION" ] || die "$2 has no Lightsail region set (vpn-sync server edit $2 --region …)"
+			local ip; ip=$(lightsail_ip "$S_REGION" "$S_INSTANCE") || die "lookup failed"
+			echo "IP=$ip"
+			;;
+		*) die "usage: vpn-sync aws set | status | remove | ip <server>" ;;
+	esac
+}
+
 # connect: sets VIA_MODE/VIA_ADDR to the first route that answers with the pinned key
 connect() {
 	local forced="$1" cands="" c mode addr tried="" aws_ip=""
 	if [ -n "$forced" ]; then
 		cands="direct:$forced"
 	else
-		if command -v aws >/dev/null 2>&1 && [ -n "$S_REGION" ]; then
-			aws_ip=$(aws lightsail get-instance --region "$S_REGION" --instance-name "$S_INSTANCE" \
-				--query 'instance.publicIpAddress' --output text 2>/dev/null || true)
-			[[ "$aws_ip" =~ $IPV4_RE ]] && cands="$cands direct:$aws_ip"
+		if [ -n "$S_REGION" ] && [ -z "$S_JUMP" ]; then
+			aws_ip=$(lightsail_ip "$S_REGION" "$S_INSTANCE" 2>/dev/null || true)
+			if [[ "$aws_ip" =~ $IPV4_RE ]]; then
+				[ "$aws_ip" != "$S_LAST" ] && [ -n "$S_LAST" ] && info "  Lightsail reports a new IP for $S_NAME: $aws_ip (was $S_LAST)"
+				cands="$cands direct:$aws_ip"
+			fi
 		fi
 		[ -n "$S_JUMP" ] && [ -n "$S_PRIVATE_IP" ] && cands="$cands jump:$S_PRIVATE_IP"
 		[ -n "$S_LAST" ] && cands="$cands direct:$S_LAST"
@@ -531,6 +604,7 @@ service_cmd() { # service_cmd SERVER VPN ACTION | reboot SERVER
 case "${1:-}" in
 	status|watch) monitor "$@"; exit ;;
 	service) shift; service_cmd "$@"; exit ;;
+	aws) shift; aws_cmd "$@"; exit ;;
 	reboot) service_cmd "$@"; exit ;;
 esac
 
@@ -559,7 +633,7 @@ while [ $# -gt 0 ]; do
 		--no-apps) opt_apps=0 ;;
 		--add) add_names opt_add "${2:-}"; shift ;;
 		--remove) add_names opt_remove "${2:-}"; shift ;;
-		-h|--help) sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		-h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
 		-*) die "unknown option: $1 (see --help)" ;;
 		*) servers+=("$1") ;;
 	esac

@@ -57,10 +57,10 @@ struct MenuBarPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("VPN Sync").font(.headline)
+                Text("VPN Sync").font(.system(size: 16, weight: .bold, design: .rounded))
                 Spacer()
                 if m.monitoring {
-                    Text("\(m.onlineEverywhere) online").font(.callout).foregroundStyle(.secondary)
+                    Text("\(m.onlineEverywhere) online").font(.system(.callout, design: .rounded)).foregroundStyle(.secondary)
                 }
             }
             if m.servers.isEmpty {
@@ -79,9 +79,9 @@ struct MenuBarPanel: View {
             Toggle("Notifications", isOn: Binding(get: { m.notify }, set: { m.setNotify($0) }))
                 .disabled(!m.monitoring)
             HStack {
-                Button("Open VPN Sync") { showMainWindow(openWindow) }
+                Button("Open VPN Sync") { showMainWindow(openWindow) }.glassButton(prominent: true)
                 Spacer()
-                Button("Quit") { NSApp.terminate(nil) }
+                Button("Quit") { NSApp.terminate(nil) }.glassButton()
             }
         }
         .padding(14)
@@ -91,13 +91,13 @@ struct MenuBarPanel: View {
     @ViewBuilder private func serverSection(_ s: String) -> some View {
         let w = m.watchers[s]
         let online = w?.onlineDevices ?? []
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Circle().fill(linkColor(w?.link ?? .off)).frame(width: 7, height: 7)
                 Button {
                     m.selectServer(s)
                     showMainWindow(openWindow)
-                } label: { Text(s).font(.callout.weight(.semibold)) }
+                } label: { Text(s).font(.system(.callout, design: .rounded).weight(.semibold)) }
                     .buttonStyle(.plain)
                     .help("Open \(s) in VPN Sync")
                 Spacer()
@@ -178,6 +178,8 @@ struct MenuBarPanel: View {
                 }
             }
         }
+        .padding(10)
+        .glassPanel(16)
     }
 
     private func renameProblem(_ s: String) -> String? {

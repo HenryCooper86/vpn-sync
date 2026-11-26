@@ -116,6 +116,8 @@ final class Model: ObservableObject {
     @Published var confirmService: ServiceAction?
     /// The Desktop read is taking long: probably waiting for the user to allow access.
     @Published var desktopWaiting = false
+    var recovering: Set<String> = []
+    var unreachableNotified: Set<String> = []
     static weak var shared: Model?
 
     // live progress for add/remove
@@ -343,11 +345,12 @@ final class Model: ObservableObject {
         }
     }
 
-    func runCLI(_ args: [String]) async -> (Int32, String) {
+    /// Runs vpn-sync. `input` is written to its stdin (used for secrets, so they never appear in
+    /// process arguments or logs). `quiet` keeps background runs out of the window's output panes.
+    func runCLI(_ args: [String], input: String? = nil, quiet: Bool = false) async -> (Int32, String) {
         let cmd = "vpn-sync \(args.joined(separator: " "))"
-        log += "$ \(cmd)\n"
-        opLog = ""
-        appendHistory("start \(cmd)")
+        if !quiet { log += "$ \(cmd)\n"; opLog = "" }
+        appendHistory("start \(cmd)\(quiet ? " (background)" : "")")
         defer { appendHistory("end \(cmd)") }
         let buffer = OutputBuffer()
         let code: Int32 = await withCheckedContinuation { cont in
@@ -357,7 +360,9 @@ final class Model: ObservableObject {
             var env = ProcessInfo.processInfo.environment
             env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
             p.environment = env
-            p.standardInput = FileHandle.nullDevice   // no tty: vpn-sync never prompts
+            var inPipe: Pipe?
+            if input != nil { inPipe = Pipe(); p.standardInput = inPipe }
+            else { p.standardInput = FileHandle.nullDevice }   // no tty: vpn-sync never prompts
             let pipe = Pipe()
             p.standardOutput = pipe
             p.standardError = pipe
@@ -365,6 +370,7 @@ final class Model: ObservableObject {
                 let d = h.availableData
                 guard !d.isEmpty else { return }
                 buffer.append(d)
+                guard !quiet else { return }
                 let s = String(decoding: d, as: UTF8.self)
                 Task { @MainActor in self.log += s; self.opLog += s; self.noteProgress(s) }
             }
@@ -375,18 +381,53 @@ final class Model: ObservableObject {
                 let s = String(decoding: rest, as: UTF8.self)
                 let status = proc.terminationStatus
                 Task { @MainActor in
-                    self.log += s
-                    self.opLog += s
+                    if !quiet { self.log += s; self.opLog += s }
                     cont.resume(returning: status)
                 }
             }
-            do { try p.run() } catch {
+            do {
+                try p.run()
+                if let inPipe, let input {
+                    inPipe.fileHandleForWriting.write(Data(input.utf8))
+                    try? inPipe.fileHandleForWriting.close()
+                }
+            } catch {
                 buffer.append(Data("could not start vpn-sync: \(error.localizedDescription)\n".utf8))
                 cont.resume(returning: -1)
             }
         }
-        log += "\n"
+        if !quiet { log += "\n" }
         return (code, buffer.string)
+    }
+
+    // MARK: IP changes
+
+    /// A server's live connection keeps failing: run a background sync, which looks up its
+    /// current IP (Lightsail, last IP, tunnels), rewrites its profiles and the Desktop folder.
+    func recover(_ s: String) async {
+        guard servers.contains(s), !recovering.contains(s) else { return }
+        recovering.insert(s)
+        defer { recovering.remove(s) }
+        let (code, out) = await runCLI([s], quiet: true)
+        if code == 0 {
+            unreachableNotified.remove(s)
+            if let line = out.split(separator: "\n").map({ $0.trimmingCharacters(in: .whitespaces) })
+                .first(where: { $0.hasPrefix("IP changed ") }) {
+                // "IP changed A -> B: re-import …"
+                let parts = line.dropFirst("IP changed ".count).components(separatedBy: ":")[0].components(separatedBy: " -> ")
+                Notifier.shared.postInfo(id: "\(s)/ip", title: "\(s) has a new IP",
+                    body: "Now \(parts.last ?? "?") (was \(parts.first ?? "?")). Profiles on the Desktop are updated; re-import them on phones and TVs.")
+            }
+            if s == server { await reloadAsync(); serverIP = lastIP; status = .upToDate }
+            restartWatcher(s)
+        } else if !unreachableNotified.contains(s) {
+            unreachableNotified.insert(s)
+            let (_, st) = await runCLI(["aws", "status"], quiet: true)
+            let hasKey = !st.contains("KEY=none") || st.contains("AWS_CLI=configured")
+            Notifier.shared.postInfo(id: "\(s)/down", title: "\(s) is unreachable",
+                body: hasKey ? "Lightsail didn't give a reachable address; the server may be stopped. VPN Sync keeps trying."
+                             : "If it was stopped and started, its IP may have changed. Add Lightsail access in VPN Sync Settings so it's found automatically, or enter the new IP in VPN Sync.")
+        }
     }
 
     // MARK: files
@@ -421,57 +462,69 @@ struct StatusPill: View {
             }
         }()
         Label(text, systemImage: icon)
-            .font(.callout.weight(.semibold))
+            .font(.system(.callout, design: .rounded).weight(.semibold))
             .foregroundStyle(color)
             .lineLimit(1)
-            .padding(.horizontal, 10).padding(.vertical, 5)
-            .background(color.opacity(0.12), in: Capsule())
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .glassCapsule(tint: color)
     }
 }
 
+/// Which VPN a device has a profile for.
 struct Badge: View {
     let text: String
     let color: Color
     var body: some View {
         Text(text)
-            .font(.caption2.weight(.semibold))
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
             .foregroundStyle(color)
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(color.opacity(0.13), in: Capsule())
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .background(color.opacity(0.16), in: Capsule())
     }
 }
 
+let openVPNColor = Color(hex: 0xF5B14C)
+
 struct DeviceRow: View {
     @EnvironmentObject var m: Model
+    @Environment(\.theme) private var t
     let device: Device
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             if m.selecting {
                 Toggle("", isOn: Binding(
                     get: { m.selection.contains(device.name) },
                     set: { on in if on { m.selection.insert(device.name) } else { m.selection.remove(device.name) } }))
                     .toggleStyle(.checkbox).labelsHidden()
             }
-            if m.liveState != .off || m.lastSnapshot != nil {
-                LiveDot(online: m.isOnline(device.name)).frame(width: 26)
-            } else {
-                Image(systemName: "laptopcomputer.and.iphone")
-                    .font(.title3).foregroundStyle(.secondary).frame(width: 26)
-            }
-            VStack(alignment: .leading, spacing: 3) {
+            DeviceAvatar(name: device.name, online: m.lastSnapshot == nil ? nil : m.isOnline(device.name))
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
-                    Text(device.name).font(.body.weight(.medium))
-                    if device.ovpn != nil { Badge(text: "OpenVPN", color: .orange) }
-                    if device.wg != nil { Badge(text: "WireGuard", color: .blue) }
+                    Text(device.name).font(.system(size: 14, weight: .semibold, design: .rounded))
+                    // Most devices have both; only the exceptions are worth a badge.
+                    if device.ovpn != nil && device.wg == nil { Badge(text: "OpenVPN only", color: openVPNColor) }
+                    if device.wg != nil && device.ovpn == nil { Badge(text: "WireGuard only", color: t.glowB) }
                     if device.ovpn == nil && device.wg == nil { Badge(text: "no profile file", color: .secondary) }
                 }
                 LiveLine(name: device.name)
             }
-            Spacer()
+            Spacer(minLength: 8)
+            if let r = m.rates[device.name], m.isOnline(device.name) {
+                VStack(alignment: .trailing, spacing: 1) {
+                    Label(formatRate(r.down), systemImage: "arrow.down")
+                    Label(formatRate(r.up), systemImage: "arrow.up").foregroundStyle(.secondary)
+                }
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .monospacedDigit()
+                .labelStyle(TightLabel())
+                .help("Download and upload speed of this device")
+            }
             if device.qr != nil && !m.selecting {
-                Button { m.qrDevice = device } label: { Label("QR", systemImage: "qrcode") }
+                Button { m.qrDevice = device } label: { Image(systemName: "qrcode") }
+                    .glassButton()
                     .help("Show the WireGuard QR code to scan on a phone or TV")
+                    .accessibilityLabel("Show QR code for \(device.name)")
             }
             if !m.selecting {
                 Menu {
@@ -484,12 +537,13 @@ struct DeviceRow: View {
                     Divider()
                     Button("Remove Device…", role: .destructive) { m.confirmRemoval = [device.name] }
                         .disabled(m.busy)
-                } label: { Image(systemName: "ellipsis.circle") }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
+                } label: { Image(systemName: "ellipsis").foregroundStyle(.secondary).frame(width: 22, height: 22) }
+                    .fullLabelMenu()
+                    .accessibilityLabel("More for \(device.name)")
             }
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 9)
+        .padding(.horizontal, 12)
         .contentShape(Rectangle())
         .onTapGesture {
             guard m.selecting else { return }
@@ -677,35 +731,40 @@ struct BatchAddSheet: View {
 
 struct ContentView: View {
     @EnvironmentObject var m: Model
+    @Environment(\.theme) private var theme
     @State private var showActivity = true
+    @State private var showDetails = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
             header
-            controls
             if !m.server.isEmpty { ServicesBar() }
             hints
-            deviceToolbar
-            devicesBox
-            DisclosureGroup(isExpanded: $showActivity) { ActivityView() } label: {
-                Text(m.events.isEmpty ? "Activity" : "Activity (\(m.events.count))")
-            }
-            DisclosureGroup("Details") {
+            devicesSection
+            activitySection
+            Spacer(minLength: 0)
+            DisclosureGroup(isExpanded: $showDetails) {
                 ScrollViewReader { proxy in
                     ScrollView {
                         Text(m.log.isEmpty ? "No output yet." : m.log)
                             .font(.system(.caption, design: .monospaced))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
                             .id("log")
                     }
                     .frame(height: 130)
+                    .glassPanel(14)
                     .onChange(of: m.log) { proxy.scrollTo("log", anchor: .bottom) }
                 }
+            } label: {
+                Text("Command output").font(.system(.callout, design: .rounded).weight(.medium)).foregroundStyle(.secondary)
             }
         }
-        .padding(20)
-        .frame(minWidth: 600, minHeight: 640)
+        .padding(.horizontal, 22)
+        .padding(.top, 30)       // clear of the window buttons (hidden title bar)
+        .padding(.bottom, 18)
+        .frame(minWidth: 660, minHeight: 720)
         .task {
             if m.server.isEmpty { m.showAddServer = true; return }
             await m.check()
@@ -766,14 +825,12 @@ struct ContentView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 14) {
-            Image(systemName: "network.badge.shield.half.filled")
-                .font(.system(size: 36))
-                .foregroundStyle(Color.accentColor)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
+        HStack(alignment: .center, spacing: 18) {
+            SignalOrb(count: m.lastSnapshot == nil ? nil : m.onlineCount, live: m.liveState == .live)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
                     if m.servers.isEmpty {
-                        Text("No servers yet").font(.title2.bold())
+                        Text("No servers yet").font(.system(size: 24, weight: .bold, design: .rounded))
                     } else {
                         Menu {
                             ForEach(m.servers, id: \.self) { s in
@@ -785,102 +842,120 @@ struct ContentView: View {
                             Button("Add Server…") { m.showAddServer = true }
                             Button("Manage Servers…") { m.showServers = true }
                         } label: {
-                            Text(m.server).font(.title2.bold())
+                            HStack(spacing: 6) {
+                                Text(m.server).font(.system(size: 24, weight: .bold, design: .rounded))
+                                Image(systemName: "chevron.down").font(.system(size: 12, weight: .bold)).foregroundStyle(.secondary)
+                            }
                         }
-                        .menuStyle(.borderlessButton)
-                        .fixedSize()
+                        .fullLabelMenu()
+                        .foregroundStyle(.primary)
                         .disabled(m.busy)
                         .help("Switch server")
                     }
                     Button { m.showServers = true } label: { Image(systemName: "server.rack") }
                         .buttonStyle(.borderless)
+                        .foregroundStyle(.secondary)
                         .help("Manage servers")
                 }
                 HStack(spacing: 6) {
-                    Text(m.serverIP ?? m.lastIP ?? "—")
-                        .font(.system(.title3, design: .monospaced))
+                    Text(m.serverIP ?? m.lastIP ?? "No address yet")
+                        .font(.system(size: 13, design: .monospaced))
+                        .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                     if let ip = m.serverIP ?? m.lastIP {
                         Button {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(ip, forType: .string)
-                        } label: { Image(systemName: "doc.on.doc") }
-                            .buttonStyle(.borderless).help("Copy IP")
+                        } label: { Image(systemName: "doc.on.doc").font(.caption) }
+                            .buttonStyle(.borderless).foregroundStyle(.secondary).help("Copy IP")
                     }
                 }
                 if let d = m.lastSynced {
-                    Text("Last synced \(d.formatted(.relative(presentation: .named)))")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text("Synced \(d.formatted(.relative(presentation: .named)))")
+                        .font(.caption).foregroundStyle(.tertiary)
                 }
             }
-            Spacer()
-            StatusPill(status: m.status)
+            Spacer(minLength: 12)
+            VStack(alignment: .trailing, spacing: 12) {
+                StatusPill(status: m.status)
+                HStack(spacing: 8) {
+                    if m.busy { ProgressView().controlSize(.small) }
+                    Button { Task { await m.check() } } label: { Label("Check", systemImage: "magnifyingglass") }
+                        .glassButton()
+                        .disabled(m.busy || m.server.isEmpty)
+                    Button { Task { await m.sync() } } label: { Label("Sync Now", systemImage: "arrow.triangle.2.circlepath") }
+                        .glassButton(prominent: true)
+                        .keyboardShortcut("r", modifiers: .command)
+                        .disabled(m.busy || m.server.isEmpty)
+                }
+            }
         }
+        .padding(18)
+        .glassPanel(28)
     }
 
-    private var controls: some View {
-        HStack(spacing: 10) {
-            TextField("Server IP (optional)", text: $m.manualIP)
+    /// Asks for an address only when the server can't be found on its own.
+    private var manualIPField: some View {
+        HStack(spacing: 8) {
+            TextField("Current IP, e.g. 203.0.113.10", text: $m.manualIP)
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 190)
+                .frame(width: 220)
                 .onSubmit { Task { await m.sync() } }
-                .help("Leave empty to find the server automatically, or paste the IP from the Lightsail console")
-            Button { Task { await m.check() } } label: { Label("Check", systemImage: "magnifyingglass") }
-                .disabled(m.busy)
-            Button { Task { await m.sync() } } label: { Label("Sync Now", systemImage: "arrow.triangle.2.circlepath") }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut("r", modifiers: .command)
-                .disabled(m.busy)
-            if m.busy { ProgressView().controlSize(.small) }
+            Button("Sync with This IP") { Task { await m.sync() } }
+                .glassButton(prominent: true)
+                .disabled(m.busy || !isIPv4(m.manualIP.trimmingCharacters(in: .whitespaces)))
         }
     }
 
     @ViewBuilder private var hints: some View {
         switch m.status {
         case .unreachable:
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Couldn't reach \(m.server). Its IP has probably changed.")
-                    .font(.callout.weight(.semibold))
-                Text("Paste its current public IPv4 (from your provider's console) into the box above and press Sync Now, or change its address under Edit Server. If this Mac is connected to \(m.server)'s VPN, disconnect it first.")
-                    .font(.callout).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Can't reach \(m.server). Its IP has probably changed.")
+                    .font(.system(.callout, design: .rounded).weight(.semibold))
+                Text("Enter its current public IP from your provider's console. With Lightsail access set up, VPN Sync finds new IPs on its own. If this Mac is connected to \(m.server)'s VPN, disconnect it first.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                manualIPField
                 HStack(spacing: 14) {
-                    if let url = m.consoleURL { Link("Open Lightsail console", destination: url).font(.callout) }
-                    Button("Edit Server…") { m.editServer = m.server }.controlSize(.small)
+                    if let url = m.consoleURL { Link("Open Lightsail console", destination: url) }
+                    Button("Edit Server…") { m.editServer = m.server }.buttonStyle(.link)
+                    if m.consoleURL != nil { SettingsLink { Text("Set Up Lightsail Access…") }.buttonStyle(.link) }
                 }
+                .font(.callout)
             }
-            .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+            .glassPanel(18, tint: .red)
         case .needsInstall:
-            HStack(alignment: .top) {
+            HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("\(m.server) isn't set up for VPN Sync yet.").font(.callout.weight(.semibold))
-                    Text("Install the server tools, and OpenVPN/WireGuard if they're missing. Existing VPN setups are kept.")
+                    Text("\(m.server) isn't set up for VPN Sync yet.").font(.system(.callout, design: .rounded).weight(.semibold))
+                    Text("Installs the server tools, plus OpenVPN and WireGuard if they're missing. Existing setups are kept.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Set Up…") { m.installServer = m.server }.buttonStyle(.borderedProminent)
+                Button("Set Up…") { m.installServer = m.server }.glassButton(prominent: true)
             }
-            .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+            .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+            .glassPanel(18, tint: .orange)
         case .needsSync:
-            Text("The server's IP or profiles changed. Press Sync Now to update the profiles on your Desktop.")
+            Text("The server's IP or profiles changed. Sync to update the profiles on your Desktop.")
                 .font(.callout)
-                .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+                .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                .glassPanel(18, tint: .orange)
         case .failed(let msg):
             VStack(alignment: .leading, spacing: 4) {
                 Text(msg).font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
                 ForEach(m.notices, id: \.self) { Text($0).font(.callout) }
             }
-            .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+            .glassPanel(18, tint: .red)
         default:
             if !m.notices.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(m.notices, id: \.self) { Text($0).font(.callout) }
                 }
-                .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                .glassPanel(18, tint: theme.online)
             }
         }
     }
@@ -893,32 +968,38 @@ struct ContentView: View {
                 Button(m.selection.count == m.devices.count ? "Select None" : "Select All") {
                     m.selection = m.selection.count == m.devices.count ? [] : m.deviceNames
                 }
-                .controlSize(.small)
-                Spacer()
+                .glassButton()
                 Button("Cancel") { m.selecting = false; m.selection = [] }
-                    .controlSize(.small)
+                    .glassButton()
                 Button(role: .destructive) {
                     m.confirmRemoval = m.devices.map(\.name).filter { m.selection.contains($0) }
                 } label: {
-                    Label("Remove \(m.selection.count) Device\(m.selection.count == 1 ? "" : "s")…", systemImage: "trash")
+                    Label("Remove \(m.selection.count)…", systemImage: "trash")
                 }
-                .controlSize(.small)
                 .tint(.red)
-                .buttonStyle(.borderedProminent)
+                .glassButton(prominent: true)
                 .disabled(m.selection.isEmpty || m.busy)
             } else {
-                Button { m.showAddDevice = true } label: { Label("Add Device", systemImage: "plus") }
-                Button { m.showBatchAdd = true } label: { Label("Batch Add…", systemImage: "plus.square.on.square") }
-                Button { m.selection = []; m.selecting = true } label: { Label("Batch Remove…", systemImage: "trash") }
-                    .disabled(m.devices.isEmpty)
-                Spacer()
-                LiveToggle()
-                if let f = m.folder {
-                    Button { NSWorkspace.shared.open(f) } label: { Label("Open Folder", systemImage: "folder") }
+                GlassGroup(spacing: 6) {
+                    HStack(spacing: 6) {
+                        Button { m.showAddDevice = true } label: { Label("Add Device", systemImage: "plus") }
+                            .glassButton(prominent: true)
+                        Button { m.showBatchAdd = true } label: { Label("Batch Add", systemImage: "plus.square.on.square") }
+                            .labelStyle(.iconOnly).glassButton()
+                            .help("Add several devices at once")
+                        Button { m.selection = []; m.selecting = true } label: { Label("Batch Remove", systemImage: "trash") }
+                            .labelStyle(.iconOnly).glassButton()
+                            .disabled(m.devices.isEmpty)
+                            .help("Choose devices to remove")
+                        if let f = m.folder {
+                            Button { NSWorkspace.shared.open(f) } label: { Label("Open Folder", systemImage: "folder") }
+                                .labelStyle(.iconOnly).glassButton()
+                                .help("Open ~/Desktop/\(f.lastPathComponent)")
+                        }
+                    }
                 }
             }
         }
-        .controlSize(.small)
         .disabled(m.server.isEmpty || (m.busy && !m.selecting))
     }
 
@@ -931,45 +1012,77 @@ struct ContentView: View {
         return all.filter { m.isOnline($0.name) } + all.filter { !m.isOnline($0.name) }
     }
 
-    private var devicesBox: some View {
-        GroupBox {
-            if m.desktopWaiting {
-                VStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("Waiting for permission to read your Desktop folder.").font(.callout.weight(.medium))
-                    Text("Click Allow in the macOS prompt, or turn it on in System Settings → Privacy & Security → Files and Folders → VPN Sync.")
-                        .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, minHeight: 120)
-            } else if m.devices.isEmpty {
-                Text(m.folder == nil ? "No profiles on the Desktop yet. Press Sync Now." : "No devices yet. Press Add Device.")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 120)
-            } else {
-                ScrollView {
-                    VStack(spacing: 0) {
-                        ForEach(rows) { d in
-                            DeviceRow(device: d)
-                            if d != rows.last { Divider() }
-                        }
+    private var devicesSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                Text("Devices").font(.system(size: 20, weight: .bold, design: .rounded))
+                Text(m.lastSnapshot == nil ? "\(rows.count)" : "\(m.onlineCount) of \(rows.count) online")
+                    .font(.system(.callout, design: .rounded)).foregroundStyle(.secondary)
+                Spacer()
+                LiveToggle()
+                deviceToolbar
+            }
+            Group {
+                if m.desktopWaiting {
+                    VStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Waiting for permission to read your Desktop folder.").font(.callout.weight(.medium))
+                        Text("Click Allow in the macOS prompt, or turn it on in System Settings → Privacy & Security → Files and Folders → VPN Sync.")
+                            .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     }
-                    .padding(.horizontal, 6)
+                    .padding(20)
+                    .frame(maxWidth: .infinity, minHeight: 140)
+                } else if rows.isEmpty {
+                    VStack(spacing: 10) {
+                        Text(m.folder == nil ? "No profiles on your Desktop yet." : "No devices on \(m.server) yet.")
+                            .font(.system(.body, design: .rounded).weight(.medium))
+                        Button(m.folder == nil ? "Sync Now" : "Add a Device") {
+                            if m.folder == nil { Task { await m.sync() } } else { m.showAddDevice = true }
+                        }
+                        .glassButton(prominent: true)
+                        .disabled(m.server.isEmpty || m.busy)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 140)
+                } else if rows.count <= 7 {
+                    // A short list hugs its rows instead of leaving an empty glass expanse.
+                    VStack(spacing: 2) { ForEach(rows) { d in DeviceRow(device: d) } }
+                        .padding(6)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 2) {
+                            ForEach(rows) { d in DeviceRow(device: d) }
+                        }
+                        .padding(6)
+                    }
+                    .frame(maxHeight: .infinity)
                 }
             }
-        } label: {
-            HStack {
-                Text(m.lastSnapshot == nil ? "Devices (\(rows.count))" : "Devices (\(rows.count), \(m.onlineCount) online)")
-                    .font(.headline)
-                if let f = m.folder {
-                    Text("~/Desktop/\(f.lastPathComponent)").font(.caption).foregroundStyle(.secondary)
-                }
-            }
+            .glassPanel(24)
         }
-        .frame(maxHeight: .infinity)
         .sheet(isPresented: $m.showAddDevice, onDismiss: {
             if let p = m.pendingQR { m.pendingQR = nil; m.qrDevice = p }
         }) { AddDeviceSheet().environmentObject(m) }
         .sheet(isPresented: $m.showBatchAdd) { BatchAddSheet().environmentObject(m) }
+    }
+
+    private var activitySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button { withAnimation(.snappy) { showActivity.toggle() } } label: {
+                HStack(spacing: 6) {
+                    Text("Activity").font(.system(size: 16, weight: .semibold, design: .rounded))
+                    if !m.events.isEmpty {
+                        Text("\(m.events.count)").font(.system(.caption, design: .rounded)).foregroundStyle(.secondary)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .rotationEffect(.degrees(showActivity ? 90 : 0))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(showActivity ? "Hide activity" : "Show activity")
+            if showActivity { ActivityView().padding(.leading, 2) }
+        }
     }
 }
 
@@ -995,15 +1108,20 @@ struct VPNSyncApp: App {
         // WindowGroup (not Window) so the window also appears when launched in the
         // background or reopened from the Dock; New Window is removed to keep one window.
         WindowGroup("VPN Sync", id: "main") {
-            ContentView().environmentObject(model)
+            Themed { ContentView().environmentObject(model) }
         }
-        .defaultSize(width: 620, height: 700)
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 700, height: 780)
         .commands { CommandGroup(replacing: .newItem) {} }
 
         // Menu bar: devices online across all servers. Keeps monitoring and notifications
         // running after the window is closed; quit from here or with ⌘Q.
+        Settings {
+            Themed(backdrop: false) { SettingsView().environmentObject(model) }
+        }
+
         MenuBarExtra {
-            MenuBarPanel(m: model)
+            Themed { MenuBarPanel(m: model) }
         } label: {
             MenuBarLabel(m: model)
         }

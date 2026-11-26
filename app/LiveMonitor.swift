@@ -146,6 +146,11 @@ final class ServerWatcher {
         guard let m = model, m.monitoring, m.servers.contains(server) else { link = .off; return }
         // Dropped (network, IP change, reboot…): try again, backing off up to a minute.
         failures += 1
+        // Second failure in a row: maybe a new IP after a stop/start. Look it up and resync.
+        if failures == 2 || failures % 10 == 0 {
+            let s = server
+            Task { @MainActor [weak m] in await m?.recover(s) }
+        }
         link = .retrying
         let delay = UInt64(min(60, 5 * failures)) * 1_000_000_000
         retryTask = Task { @MainActor [weak self] in
@@ -315,6 +320,15 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    /// A general notice (IP changed, server unreachable…). A newer one with the same id replaces it.
+    func postInfo(id: String, title: String, body: String) {
+        let c = UNMutableNotificationContent()
+        c.title = title
+        c.body = body
+        c.threadIdentifier = id.components(separatedBy: "/").first ?? id
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: c, trigger: nil))
+    }
+
     func post(_ e: LiveEvent, server: String) {
         let c = UNMutableNotificationContent()
         c.title = "\(e.device) \(e.connected ? "connected" : "disconnected")"
@@ -457,58 +471,61 @@ struct LiveLine: View {
         guard m.lastSnapshot != nil else { return nil }
         var parts: [String] = []
         if let o = m.ovpnLive[name] {
-            parts.append("OpenVPN from \(o.realIP), since \(o.since.formatted(date: .omitted, time: .shortened))")
+            parts.append("On OpenVPN from \(o.realIP) since \(o.since.formatted(date: .omitted, time: .shortened))")
         }
         if m.wgOnline(name), let w = m.wgLive[name] {
-            parts.append("WireGuard from \(w.endpoint ?? "?")")
+            parts.append("\(parts.isEmpty ? "On " : "and ")WireGuard from \(w.endpoint ?? "an unknown address")")
         }
-        if !parts.isEmpty {
-            var s = "Online · " + parts.joined(separator: " · ")
-            if let r = m.rates[name] { s += " · ↓ \(formatRate(r.down)) ↑ \(formatRate(r.up))" }
-            return s
-        }
+        if !parts.isEmpty { return parts.joined(separator: ", ") }
         if let hs = m.wgLive[name]?.handshake {
-            return "Offline · WireGuard last seen \(hs.formatted(.relative(presentation: .named)))"
+            return "Last seen \(hs.formatted(.relative(presentation: .named)))"
         }
         if let e = m.events.first(where: { $0.device == name && !$0.connected }) {
-            return "Offline · disconnected \(e.time.formatted(.relative(presentation: .named)))"
+            return "Disconnected \(e.time.formatted(.relative(presentation: .named)))"
         }
-        return "Offline"
+        return "Not connected"
     }
 }
 
 struct LiveToggle: View {
     @EnvironmentObject var m: Model
+    @Environment(\.theme) private var t
     var body: some View {
-        HStack(spacing: 6) {
-            Button { m.setMonitoring(!m.monitoring) } label: {
-                HStack(spacing: 5) {
-                    Circle().fill(color).frame(width: 8, height: 8)
-                    Text(label)
+        GlassGroup(spacing: 6) {
+            HStack(spacing: 6) {
+                Button { m.setMonitoring(!m.monitoring) } label: {
+                    HStack(spacing: 6) {
+                        Circle().fill(color).frame(width: 8, height: 8)
+                            .shadow(color: m.liveState == .live ? color.opacity(0.9) : .clear, radius: 4)
+                        Text(label).font(.system(.callout, design: .rounded).weight(.medium))
+                    }
                 }
+                .glassButton()
+                .help(m.monitoring ? "Live monitoring of all servers is on. Click to stop." : "Show who is connected, live")
+                Button { m.setNotify(!m.notify) } label: {
+                    Image(systemName: m.notify ? "bell.fill" : "bell.slash")
+                }
+                .glassButton()
+                .disabled(!m.monitoring)
+                .help(m.notify ? "Notifications are on for every server. Click to turn off."
+                               : "Notifications are off. Click to get a banner when a device connects or disconnects.")
+                .accessibilityLabel(m.notify ? "Turn notifications off" : "Turn notifications on")
             }
-            .help(m.monitoring ? "Live monitoring of all servers is on: click to stop" : "Show who is connected, live")
-            Button { m.setNotify(!m.notify) } label: {
-                Image(systemName: m.notify ? "bell.fill" : "bell.slash")
-            }
-            .help(m.notify ? "Notifications on: a banner for every device that connects or disconnects, on any server. Click to turn off."
-                           : "Notifications off. Click to get a banner when a device connects or disconnects.")
-            .disabled(!m.monitoring)
         }
     }
     private var color: Color {
         switch m.liveState {
-        case .live: return .green
+        case .live: return t.online
         case .connecting, .retrying: return .orange
         case .off: return .secondary
         }
     }
     private var label: String {
         switch m.liveState {
-        case .live: return "Live · \(m.onlineCount) online"
-        case .connecting: return "Connecting…"
-        case .retrying: return "Reconnecting…"
-        case .off: return m.monitoring ? "Live" : "Live: off"
+        case .live: return "Live"
+        case .connecting: return "Connecting"
+        case .retrying: return "Reconnecting"
+        case .off: return m.monitoring ? "Live" : "Live off"
         }
     }
 }
@@ -516,10 +533,15 @@ struct LiveToggle: View {
 /// OpenVPN / WireGuard service state with start, stop, restart, and a server reboot.
 struct ServicesBar: View {
     @EnvironmentObject var m: Model
+    @Environment(\.theme) private var t
     var body: some View {
         HStack(spacing: 10) {
-            serviceMenu("openvpn", "OpenVPN")
-            serviceMenu("wireguard", "WireGuard")
+            GlassGroup(spacing: 8) {
+                HStack(spacing: 8) {
+                    serviceMenu("openvpn", "OpenVPN")
+                    serviceMenu("wireguard", "WireGuard")
+                }
+            }
             Spacer()
             Menu {
                 Button("Restart Both VPNs…") { m.confirmService = ServiceAction(server: m.server, vpn: "all", action: "restart") }
@@ -527,11 +549,14 @@ struct ServicesBar: View {
                 Button("Start Both VPNs") { Task { await m.runService(ServiceAction(server: m.server, vpn: "all", action: "start")) } }
                 Divider()
                 Button("Reboot Server…") { m.confirmService = ServiceAction(server: m.server, vpn: "reboot", action: "reboot") }
-            } label: { Label("Server", systemImage: "power") }
-                .menuStyle(.borderlessButton).fixedSize()
-                .help("Start, stop or restart the VPNs, or reboot the server")
+            } label: {
+                Label("Power", systemImage: "power").font(.system(.callout, design: .rounded).weight(.medium))
+            }
+            .fullLabelMenu()
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .glassCapsule()
+            .help("Start, stop or restart the VPNs, or reboot the server")
         }
-        .font(.callout)
         .disabled(m.busy || m.server.isEmpty)
     }
 
@@ -547,19 +572,23 @@ struct ServicesBar: View {
                     Button("Restart \(label)…") { m.confirmService = ServiceAction(server: m.server, vpn: vpn, action: "restart") }
                 }
             } label: {
-                HStack(spacing: 5) {
+                HStack(spacing: 7) {
                     Circle().fill(dotColor(s)).frame(width: 8, height: 8)
-                    Text("\(label): \(stateText(s))")
+                        .shadow(color: s?.state == "active" ? t.online.opacity(0.8) : .clear, radius: 3)
+                    Text(label).font(.system(.callout, design: .rounded).weight(.semibold))
+                    Text(stateText(s)).font(.system(.callout, design: .rounded)).foregroundStyle(.secondary)
                 }
             }
-            .menuStyle(.borderlessButton).fixedSize()
+            .fullLabelMenu()
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .glassCapsule(tint: s?.state == "failed" ? .red : nil)
             .help(s?.since.map { "\(label) running since \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "\(label) service")
         }
     }
 
     private func dotColor(_ s: ServiceState?) -> Color {
         switch s?.state {
-        case "active": return .green
+        case "active": return t.online
         case "failed": return .red
         case nil: return .secondary
         default: return .orange
@@ -570,7 +599,7 @@ struct ServicesBar: View {
         case "active": return "running"
         case "inactive": return "stopped"
         case "failed": return "failed"
-        case nil: return m.monitoring ? "…" : "unknown"
+        case nil: return m.monitoring ? "checking" : "unknown"
         case let x?: return x
         }
     }
@@ -578,29 +607,32 @@ struct ServicesBar: View {
 
 struct ActivityView: View {
     @EnvironmentObject var m: Model
+    @Environment(\.theme) private var t
     var body: some View {
         if m.events.isEmpty {
-            Text(m.monitoring ? "Connects and disconnects will appear here while VPN Sync is open." : "Turn on Live to see connects and disconnects.")
-                .font(.caption).foregroundStyle(.secondary)
+            Text(m.monitoring ? "Connects and disconnects show up here while VPN Sync is running." : "Turn on Live to see connects and disconnects.")
+                .font(.callout).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             ScrollView {
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 5) {
                     ForEach(m.events) { e in
-                        HStack(spacing: 8) {
+                        HStack(spacing: 10) {
                             Text(e.time.formatted(date: .omitted, time: .standard))
-                                .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
-                            Image(systemName: e.connected ? "arrow.up.right.circle.fill" : "arrow.down.left.circle")
-                                .foregroundStyle(e.connected ? Color.green : Color.secondary)
-                            Text("\(e.device) \(e.connected ? "connected" : "disconnected")").font(.caption.weight(.medium))
-                            Text("\(e.vpn)\(e.ip == "-" ? "" : " · \(e.ip)")").font(.caption).foregroundStyle(.secondary)
+                                .font(.system(.caption, design: .rounded)).monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 70, alignment: .leading)
+                            Circle().fill(e.connected ? t.online : Color.secondary.opacity(0.6)).frame(width: 7, height: 7)
+                            Text(e.device).font(.system(.callout, design: .rounded).weight(.semibold))
+                            Text(e.connected ? "connected" : "disconnected").font(.callout)
+                            Text("on \(e.vpn)\(e.ip == "-" ? "" : " from \(e.ip)")").font(.callout).foregroundStyle(.secondary)
                             Spacer()
                         }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(height: 110)
+            .frame(height: 104)
         }
     }
 }

@@ -113,6 +113,33 @@ struct ServerListSheet: View {
     @State private var installing: ServerRef?
     @State private var removing: ServerRef?
     @State private var error: String?
+    @State private var renaming: String?
+    @State private var newName = ""
+    @State private var renameBusy = false
+    @FocusState private var nameFocused: Bool
+
+    private func renameProblem(_ old: String) -> String? {
+        if newName.isEmpty { return "Enter a name." }
+        if !isValidServerName(newName) { return "Use letters, numbers, - and _ (no spaces), up to 40." }
+        if newName != old && m.servers.contains(newName) { return "“\(newName)” already exists." }
+        return nil
+    }
+
+    private func rename(_ old: String) {
+        guard renameProblem(old) == nil, newName != old, !renameBusy else { return }
+        renameBusy = true
+        let to = newName
+        Task {
+            let (code, out) = await m.cli(["server", "rename", old, to], label: "Renaming \(old)…")
+            renameBusy = false
+            if code == 0 {
+                renaming = nil; error = nil
+                m.reloadServers(select: m.server == old ? to : nil)
+            } else {
+                error = "Not renamed: " + lastLines(out, 1).replacingOccurrences(of: "vpn-sync: ", with: "")
+            }
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -128,13 +155,32 @@ struct ServerListSheet: View {
                             .foregroundStyle(name == m.server ? Color.accentColor : .secondary)
                             .frame(width: 20)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(name).font(.body.weight(.semibold))
-                            Text("\(info.user)@\(info.address.isEmpty ? "?" : info.address)\(info.jump.isEmpty ? "" : "  ·  via \(info.jump) → \(info.privateIP)")")
-                                .font(.caption).foregroundStyle(.secondary)
+                            if renaming == name {
+                                HStack(spacing: 6) {
+                                    TextField("New name", text: $newName)
+                                        .textFieldStyle(.roundedBorder).frame(width: 200)
+                                        .focused($nameFocused)
+                                        .onSubmit { rename(name) }
+                                    Button("Save") { rename(name) }
+                                        .buttonStyle(.borderedProminent)
+                                        .disabled(renameBusy || newName == name || renameProblem(name) != nil)
+                                    Button("Cancel") { renaming = nil }.disabled(renameBusy)
+                                }
+                                Text(renameProblem(name) ?? "Its Desktop folder is renamed too.")
+                                    .font(.caption)
+                                    .foregroundStyle(renameProblem(name) == nil ? Color.secondary : Color.red)
+                            } else {
+                                Text(name).font(.body.weight(.semibold))
+                                Text("\(info.user)@\(info.address.isEmpty ? "?" : info.address)\(info.jump.isEmpty ? "" : ", through \(info.jump) at \(info.privateIP)")")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                         Spacer()
-                        if name != m.server {
-                            Button("Use") { m.selectServer(name); dismiss() }
+                        if renaming != name {
+                            if name != m.server {
+                                Button("Use") { m.selectServer(name); dismiss() }
+                            }
+                            Button("Rename…") { renaming = name; newName = name; error = nil; nameFocused = true }
                         }
                         Button("Edit…") { editing = ServerRef(name: name) }
                         Button("Set Up…") { installing = ServerRef(name: name) }

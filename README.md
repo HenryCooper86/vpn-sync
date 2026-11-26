@@ -10,7 +10,9 @@ A macOS app and command-line tool for running your own OpenVPN + WireGuard serve
   VPNs at once. WireGuard profiles come with QR codes for phones and TVs.
 - **Survive IP changes:** each server rewrites its own profiles when its public IP
   changes (at boot and every 15 minutes). The Mac pulls fresh profiles to
-  `~/Desktop/<server>-<ip>/` and fixes OpenVPN Connect's saved profile.
+  `~/Desktop/<server>-<ip>/` and fixes OpenVPN Connect's saved profile. With a read-only
+  Lightsail key (Settings → Lightsail), VPN Sync finds a server's new IP after a stop/start
+  on its own, resyncs, and sends a notification.
 - **Watch it live:** see which devices are connected, from where, since when, and how
   fast, with a log of connects and disconnects, and a macOS notification whenever a
   device connects or disconnects on any server.
@@ -32,6 +34,14 @@ Needs Xcode or the Command Line Tools (to build the app).
 
 This installs `~/.local/bin/vpn-sync` (make sure `~/.local/bin` is on your `PATH`), the
 server bundle in `~/.local/share/vpn-sync/server`, and `~/Applications/VPN Sync.app`.
+
+## Look and feel
+
+Liquid Glass panels and buttons over a colour field (macOS 26+, with material fallbacks on
+macOS 14–15). Settings → Appearance has five themes, each a full palette with its own
+light or dark mode: Aurora, Sakura, Glacier, Moss and Graphite. The header's signal orb shows
+how many devices are online and ripples when one connects (not with Reduce Motion). The app
+icon, a glass lens looking down a tunnel of light, is drawn by `app/make-icon.swift`.
 
 ## Using the app
 
