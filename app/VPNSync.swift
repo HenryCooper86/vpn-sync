@@ -527,15 +527,7 @@ struct DeviceRow: View {
                     if device.wg != nil && device.ovpn == nil { Badge(text: "WireGuard only", color: .cyan) }
                     if device.ovpn == nil && device.wg == nil { Badge(text: "no profile file", color: .secondary) }
                     if m.isPinned(device.name) { LucideIcon("star", size: 11).foregroundStyle(.yellow).help("Pinned") }
-                    if let p = m.pauseInfo(device.name) {
-                        Label("Paused", lucide: "pause", size: 10)
-                            .labelStyle(TightLabel())
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.orange)
-                            .padding(.horizontal, 7).padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.16), in: Capsule())
-                            .help(p.label)
-                    }
+                    if let p = m.pauseInfo(device.name) { PausedBadge(info: p) }
                 }
                 Text(kindLine).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 LiveLine(name: device.name)
@@ -852,6 +844,8 @@ struct ContentView: View {
             if m.monitoring { m.startMonitoring() }
         }
         .sheet(item: $m.qrDevice) { QRSheet(device: $0) }
+        // on its own view: many .sheet modifiers on one view don't all present
+        .background(Color.clear.sheet(item: $m.limitTarget) { LimitSheet(target: $0).environmentObject(m) })
         .alert(serviceTitle, isPresented: Binding(
             get: { m.confirmService != nil },
             set: { if !$0 { m.confirmService = nil } }), presenting: m.confirmService) { a in
@@ -1148,8 +1142,6 @@ struct ContentView: View {
             if let p = m.pendingQR { m.pendingQR = nil; m.qrDevice = p }
         }) { AddDeviceSheet().environmentObject(m) }
         .sheet(isPresented: $m.showBatchAdd) { BatchAddSheet().environmentObject(m) }
-        // on its own view: many .sheet modifiers on one view don't all present
-        .background(Color.clear.sheet(item: $m.limitTarget) { LimitSheet(target: $0).environmentObject(m) })
     }
 
     @ViewBuilder private var devicesList: some View {

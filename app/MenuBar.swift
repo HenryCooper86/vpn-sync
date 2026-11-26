@@ -190,7 +190,10 @@ struct MenuBarPanel: View {
                             HStack(spacing: 10) {
                                 DeviceAvatar(name: d.name, online: true, size: 26, kind: m.deviceKind(d.name))
                                 VStack(alignment: .leading, spacing: 1) {
-                                    Text(d.name).font(.system(size: 13, weight: .semibold, design: .rounded))
+                                    HStack(spacing: 6) {
+                                        Text(d.name).font(.system(size: 13, weight: .semibold, design: .rounded))
+                                        if let p = m.usageByServer[s]?.paused[d.name] { PausedBadge(info: p) }
+                                    }
                                     Text(d.via).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                 }
                                 Spacer(minLength: 6)
@@ -211,6 +214,7 @@ struct MenuBarPanel: View {
             } else if m.monitoring && (w?.link == .retrying) {
                 Text("Can't reach it right now. Retrying.").font(.callout).foregroundStyle(.secondary)
             }
+            PanelLimits(m: m, server: s) { showMainWindow(openWindow) }
         }
         .padding(12)
         .glassPanel(18)
@@ -268,7 +272,9 @@ struct MenuBarPanel: View {
     }
     private func linkText(_ w: ServerWatcher?, count: Int) -> String {
         switch w?.link ?? .off {
-        case .live: return "\(count) online"
+        case .live:
+            let paused = w.flatMap { m.usageByServer[$0.server]?.paused.count } ?? 0
+            return "\(count) online" + (paused > 0 ? ", \(paused) paused" : "")
         case .connecting: return "connecting…"
         case .retrying: return "unreachable"
         case .off: return "not monitored"

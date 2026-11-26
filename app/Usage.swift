@@ -12,6 +12,20 @@ struct DeviceUsage: Equatable {
 struct UsageLimit: Equatable {
     var daily: Int64 = 0, monthly: Int64 = 0
     var pauses = false            // false: alert only
+
+    /// The limit closest to being reached: fraction used and "86% of 1.5 GB a day".
+    func tightest(_ u: DeviceUsage) -> (fraction: Double, text: String)? {
+        var best: (fraction: Double, text: String)?
+        if daily > 0 {
+            let f = Double(u.today) / Double(daily)
+            best = (f, "\(Int(min(f, 9.99) * 100))% of \(formatBytes(daily)) a day")
+        }
+        if monthly > 0 {
+            let f = Double(u.month) / Double(monthly)
+            if best == nil || f > best!.fraction { best = (f, "\(Int(min(f, 9.99) * 100))% of \(formatBytes(monthly)) a month") }
+        }
+        return best
+    }
 }
 struct PauseInfo: Equatable {
     var reason: String            // manual, daily, monthly
@@ -84,8 +98,8 @@ extension Model {
         if code == 0, let u = UsageState.parse(out) { setUsage(u, server: s) }
     }
 
-    func setPaused(_ name: String, _ pause: Bool) async {
-        let s = server
+    func setPaused(_ name: String, _ pause: Bool, server: String? = nil) async {
+        let s = server ?? self.server
         let (code, out) = await cli([pause ? "pause" : "resume", s, name], label: "\(pause ? "Pausing" : "Resuming") \(name)…")
         if code == 0 {
             notices = [pause ? "\(name) is paused: it stays connected but gets no internet until you resume it."
@@ -169,7 +183,7 @@ struct UsageLine: View {
                 Text(summary(u ?? DeviceUsage()))
                     .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                     .lineLimit(1)
-                if let limit, let (frac, text) = tightest(u ?? DeviceUsage(), limit) {
+                if let limit, let (frac, text) = limit.tightest(u ?? DeviceUsage()) {
                     UsageMeter(fraction: frac)
                         .help(text)
                     Text(text).font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
@@ -181,19 +195,85 @@ struct UsageLine: View {
     private func summary(_ u: DeviceUsage) -> String {
         "\(formatBytes(u.today)) today, \(formatBytes(u.month)) this month"
     }
+}
 
-    /// The limit closest to being reached.
-    private func tightest(_ u: DeviceUsage, _ l: UsageLimit) -> (Double, String)? {
-        var best: (Double, String)?
-        if l.daily > 0 {
-            let f = Double(u.today) / Double(l.daily)
-            best = (f, "\(Int(min(f, 9.99) * 100))% of \(formatBytes(l.daily)) a day")
+/// "Paused" capsule; the tooltip says why and until when.
+struct PausedBadge: View {
+    let info: PauseInfo
+    var body: some View {
+        Label("Paused", lucide: "pause", size: 10)
+            .labelStyle(TightLabel())
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .background(Color.orange.opacity(0.16), in: Capsule())
+            .help(info.label)
+    }
+}
+
+/// Menu bar panel: every device on a server that has a limit or is paused, closest to its
+/// limit first, with Pause/Resume and limit actions.
+struct PanelLimits: View {
+    @ObservedObject var m: Model
+    let server: String
+    let openMain: () -> Void
+
+    private var names: [String] {
+        guard let u = m.usageByServer[server] else { return [] }
+        func frac(_ n: String) -> Double {
+            u.limits[n]?.tightest(u.usage[n] ?? DeviceUsage())?.fraction ?? 0
         }
-        if l.monthly > 0 {
-            let f = Double(u.month) / Double(l.monthly)
-            if best == nil || f > best!.0 { best = (f, "\(Int(min(f, 9.99) * 100))% of \(formatBytes(l.monthly)) a month") }
+        return Set(u.limits.keys).union(u.paused.keys).sorted {
+            let p0 = u.paused[$0] != nil, p1 = u.paused[$1] != nil
+            if p0 != p1 { return p0 }
+            if frac($0) != frac($1) { return frac($0) > frac($1) }
+            return $0.localizedStandardCompare($1) == .orderedAscending
         }
-        return best
+    }
+
+    var body: some View {
+        let list = names
+        if !list.isEmpty, let u = m.usageByServer[server] {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Limits").font(.system(.caption, design: .rounded).weight(.semibold)).foregroundStyle(.secondary)
+                ForEach(list, id: \.self) { n in row(n, u) }
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    @ViewBuilder private func row(_ n: String, _ u: UsageState) -> some View {
+        let used = u.usage[n] ?? DeviceUsage()
+        let limit = u.limits[n]
+        HStack(spacing: 8) {
+            Text(n).font(.system(size: 12, weight: .semibold, design: .rounded)).lineLimit(1)
+            if let p = u.paused[n] { PausedBadge(info: p) }
+            Spacer(minLength: 6)
+            if let (f, text) = limit?.tightest(used) {
+                Text(text).font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                UsageMeter(fraction: f, width: 44)
+            } else {
+                Text("\(formatBytes(used.today)) today").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            }
+            Menu {
+                if u.paused[n] != nil {
+                    Button("Resume Internet") { Task { await m.setPaused(n, false, server: server) } }
+                } else {
+                    Button("Pause Internet") { Task { await m.setPaused(n, true, server: server) } }
+                }
+                Button(limit == nil ? "Set Usage Limit…" : "Edit Usage Limit…") {
+                    openMain()
+                    m.limitTarget = LimitTarget(server: server, device: n)
+                }
+                if limit != nil {
+                    Button("Remove Limit") { Task { _ = await m.saveLimit(n, server: server, nil) } }
+                }
+            } label: { LucideIcon("ellipsis", size: 13).foregroundStyle(.secondary).frame(width: 18, height: 18) }
+                .fullLabelMenu()
+                .disabled(m.busy)
+                .accessibilityLabel("Limit options for \(n)")
+        }
+        .help("\(formatBytes(used.today)) today, \(formatBytes(used.month)) this month")
     }
 }
 
