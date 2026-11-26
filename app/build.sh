@@ -7,7 +7,7 @@ rm -rf build
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build/AppIcon.iconset
 
 swiftc -swift-version 5 -O -parse-as-library -target arm64-apple-macos14.0 \
-	-o "$APP/Contents/MacOS/VPNSync" VPNSync.swift ServerViews.swift LiveMonitor.swift
+	-o "$APP/Contents/MacOS/VPNSync" VPNSync.swift ServerViews.swift LiveMonitor.swift MenuBar.swift
 cp Info.plist "$APP/Contents/Info.plist"
 
 swift make-icon.swift build/icon-1024.png

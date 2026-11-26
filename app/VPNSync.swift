@@ -114,6 +114,8 @@ final class Model: ObservableObject {
     /// One live watcher per server, so notifications cover every server, not just the selected one.
     var watchers: [String: ServerWatcher] = [:]
     @Published var confirmService: ServiceAction?
+    /// The Desktop read is taking long: probably waiting for the user to allow access.
+    @Published var desktopWaiting = false
     static weak var shared: Model?
 
     // live progress for add/remove
@@ -158,17 +160,35 @@ final class Model: ObservableObject {
         Task { await check() }
     }
 
-    func reload() {
-        let state = configDir.appendingPathComponent("\(server).last-ip")
+    /// Refreshes server state and the device list, without waiting.
+    func reload() { Task { await reloadAsync() } }
+
+    /// Reads the Desktop folder off the main thread: macOS can hold that read until the user
+    /// answers its "access files in your Desktop folder" prompt, and the app must not freeze.
+    func reloadAsync() async {
+        let srv = server
+        let state = configDir.appendingPathComponent("\(srv).last-ip")
         lastIP = (try? String(contentsOf: state, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         lastSynced = (try? FileManager.default.attributesOfItem(atPath: state.path))?[.modificationDate] as? Date
-        folder = findFolder()
-        devices = loadDevices()
+        let ip = lastIP
+        let waiting = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if !Task.isCancelled { self?.desktopWaiting = true }
+        }
+        let (f, d) = await Task.detached(priority: .userInitiated) { () -> (URL?, [Device]) in
+            let f = Model.findFolder(server: srv, lastIP: ip)
+            return (f, Model.loadDevices(in: f))
+        }.value
+        waiting.cancel()
+        desktopWaiting = false
+        guard srv == server else { return }   // switched servers meanwhile
+        folder = f
+        devices = d
         selection = selection.intersection(deviceNames)
     }
 
-    private func findFolder() -> URL? {
+    nonisolated private static func findFolder(server: String, lastIP: String?) -> URL? {
         if let ip = lastIP {
             let u = desktopDir.appendingPathComponent("\(server)-\(ip)")
             if isDirectory(u) { return u }
@@ -186,7 +206,7 @@ final class Model: ObservableObject {
             }
     }
 
-    private func loadDevices() -> [Device] {
+    nonisolated private static func loadDevices(in folder: URL?) -> [Device] {
         guard let folder else { return [] }
         let fm = FileManager.default
         var byName: [String: Device] = [:]
@@ -226,7 +246,7 @@ final class Model: ObservableObject {
         notices = []
         let (code, output) = await runCLI((check ? ["--check"] : []) + ipArgs + [server])
         apply(output: output, code: code, check: check)
-        reload()
+        await reloadAsync()
         if case .upToDate = status, !check { manualIP = "" }
     }
 
@@ -245,7 +265,7 @@ final class Model: ObservableObject {
         let (code, output) = await runCLI([adding ? "--add" : "--remove", names.joined(separator: ",")] + ipArgs + [server])
         progressTotal = 0
         apply(output: output, code: code, check: false)
-        reload()
+        await reloadAsync()
 
         let lines = output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
         let marker = adding ? "added device: " : "removed device: "
@@ -913,7 +933,15 @@ struct ContentView: View {
 
     private var devicesBox: some View {
         GroupBox {
-            if m.devices.isEmpty {
+            if m.desktopWaiting {
+                VStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Waiting for permission to read your Desktop folder.").font(.callout.weight(.medium))
+                    Text("Click Allow in the macOS prompt, or turn it on in System Settings → Privacy & Security → Files and Folders → VPN Sync.")
+                        .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, minHeight: 120)
+            } else if m.devices.isEmpty {
                 Text(m.folder == nil ? "No profiles on the Desktop yet. Press Sync Now." : "No devices yet. Press Add Device.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 120)
@@ -946,7 +974,8 @@ struct ContentView: View {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    /// Stay running in the menu bar when the window is closed.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated {
             Notifier.shared.setup()
@@ -965,10 +994,19 @@ struct VPNSyncApp: App {
     var body: some Scene {
         // WindowGroup (not Window) so the window also appears when launched in the
         // background or reopened from the Dock; New Window is removed to keep one window.
-        WindowGroup("VPN Sync") {
+        WindowGroup("VPN Sync", id: "main") {
             ContentView().environmentObject(model)
         }
         .defaultSize(width: 620, height: 700)
         .commands { CommandGroup(replacing: .newItem) {} }
+
+        // Menu bar: devices online across all servers. Keeps monitoring and notifications
+        // running after the window is closed; quit from here or with ⌘Q.
+        MenuBarExtra {
+            MenuBarPanel(m: model)
+        } label: {
+            MenuBarLabel(m: model)
+        }
+        .menuBarExtraStyle(.window)
     }
 }

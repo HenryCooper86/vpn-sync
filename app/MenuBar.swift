@@ -1,0 +1,129 @@
+// Menu bar item: a shield with the number of devices online across all servers, and a
+// panel listing who is connected on each server.
+import SwiftUI
+import AppKit
+
+struct MenuBarLabel: View {
+    @ObservedObject var m: Model
+    var body: some View {
+        let n = m.onlineEverywhere
+        HStack(spacing: 3) {
+            Image(systemName: icon)
+            if m.monitoring { Text("\(n)").monospacedDigit() }
+        }
+        .help("VPN Sync: \(n) device\(n == 1 ? "" : "s") online")
+        .onAppear { debugNote("menubar label appeared icon=\(icon) count=\(n)") }
+        .onChange(of: n) { debugNote("menubar count=\(n) icon=\(icon)") }
+    }
+
+    /// Test hook (VPNSYNC_DEBUG_DIR): records what the menu bar item shows.
+    private func debugNote(_ s: String) {
+        guard let dir = ProcessInfo.processInfo.environment["VPNSYNC_DEBUG_DIR"] else { return }
+        let url = URL(fileURLWithPath: dir + "/menubar.txt")
+        let line = Data("\(Int(Date().timeIntervalSince1970)) \(s)\n".utf8)
+        if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(line); try? h.close() }
+        else { try? line.write(to: url) }
+    }
+    private var icon: String {
+        if !m.monitoring { return "shield.slash" }
+        let anyLive = m.watchers.values.contains { $0.link == .live }
+        if !anyLive { return "shield" }
+        return m.onlineEverywhere > 0 ? "shield.lefthalf.filled" : "shield"
+    }
+}
+
+/// Brings the main window forward, opening it if it was closed.
+@MainActor
+func showMainWindow(_ openWindow: OpenWindowAction) {
+    NSApp.activate(ignoringOtherApps: true)
+    if let w = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true && $0.canBecomeMain }) {
+        w.makeKeyAndOrderFront(nil)
+    } else {
+        openWindow(id: "main")
+    }
+}
+
+struct MenuBarPanel: View {
+    @ObservedObject var m: Model
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("VPN Sync").font(.headline)
+                Spacer()
+                if m.monitoring {
+                    Text("\(m.onlineEverywhere) online").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            if m.servers.isEmpty {
+                Text("No servers yet.").foregroundStyle(.secondary)
+            } else if !m.monitoring {
+                Text("Live monitoring is off.").foregroundStyle(.secondary)
+                Button("Turn On Live Monitoring") { m.setMonitoring(true) }
+            } else {
+                ForEach(m.servers, id: \.self) { s in serverSection(s) }
+            }
+            Divider()
+            Toggle("Notifications", isOn: Binding(get: { m.notify }, set: { m.setNotify($0) }))
+                .disabled(!m.monitoring)
+            HStack {
+                Button("Open VPN Sync") { showMainWindow(openWindow) }
+                Spacer()
+                Button("Quit") { NSApp.terminate(nil) }
+            }
+        }
+        .padding(14)
+        .frame(width: 340)
+    }
+
+    @ViewBuilder private func serverSection(_ s: String) -> some View {
+        let w = m.watchers[s]
+        let online = w?.onlineDevices ?? []
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Circle().fill(linkColor(w?.link ?? .off)).frame(width: 7, height: 7)
+                Button {
+                    m.selectServer(s)
+                    showMainWindow(openWindow)
+                } label: { Text(s).font(.callout.weight(.semibold)) }
+                    .buttonStyle(.plain)
+                    .help("Open \(s) in VPN Sync")
+                Spacer()
+                Text(linkText(w, count: online.count)).font(.caption).foregroundStyle(.secondary)
+            }
+            if w?.link == .live {
+                if online.isEmpty {
+                    Text("No devices online").font(.caption).foregroundStyle(.secondary).padding(.leading, 13)
+                } else {
+                    ForEach(online, id: \.name) { d in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            LiveDot(online: true).scaleEffect(0.7)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(d.name).font(.callout)
+                                Text(d.detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
+                        .padding(.leading, 6)
+                    }
+                }
+            }
+        }
+    }
+
+    private func linkColor(_ l: LiveLink) -> Color {
+        switch l {
+        case .live: return .green
+        case .connecting, .retrying: return .orange
+        case .off: return .secondary
+        }
+    }
+    private func linkText(_ w: ServerWatcher?, count: Int) -> String {
+        switch w?.link ?? .off {
+        case .live: return "\(count) online"
+        case .connecting: return "connecting…"
+        case .retrying: return "can't reach, retrying…"
+        case .off: return "not monitored"
+        }
+    }
+}

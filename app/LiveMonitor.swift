@@ -77,8 +77,22 @@ final class ServerWatcher {
     }
     func isOnline(_ name: String) -> Bool { ovpnLive[name] != nil || wgOnline(name) }
 
-    private func changed() {
-        if let m = model, m.server == server { m.objectWillChange.send() }
+    /// Every server's changes refresh the UI: the menu bar shows all servers.
+    private func changed() { model?.objectWillChange.send() }
+
+    /// Devices connected right now, online first by name.
+    var onlineDevices: [(name: String, detail: String)] {
+        let names = Set(ovpnLive.keys).union(wgLive.keys.filter { wgOnline($0) }).sorted {
+            $0.localizedStandardCompare($1) == .orderedAscending
+        }
+        return names.map { n in
+            var via: [String] = []
+            if let o = ovpnLive[n] { via.append("OpenVPN \(o.realIP)") }
+            if wgOnline(n), let w = wgLive[n] { via.append("WireGuard \(w.endpoint ?? "?")") }
+            var d = via.joined(separator: " · ")
+            if let r = rates[n] { d += " · ↓\(formatRate(r.down)) ↑\(formatRate(r.up))" }
+            return (n, d)
+        }
     }
 
     // MARK: lifecycle

@@ -15,6 +15,9 @@ A macOS app and command-line tool for running your own OpenVPN + WireGuard serve
   fast, with a log of connects and disconnects, and a macOS notification whenever a
   device connects or disconnects on any server.
 - **Control services:** start, stop or restart OpenVPN and WireGuard, or reboot the server.
+- **Menu bar:** a shield with the number of devices online across all servers; click it to
+  see who is connected where. Closing the window keeps VPN Sync running there (quit from
+  the menu bar panel or with ⌘Q).
 - **Reach locked-down servers:** connect through another server over a private network
   (for example two Lightsail instances in one region) so SSH can stay closed to the internet.
 
@@ -77,6 +80,10 @@ Local state lives in `~/.config/vpn-sync/`: one `<server>.conf` per server (see
 `known_hosts`, and the last seen IP per server. None of it belongs in this repository.
 
 ## Notes
+
+- macOS asks once whether VPN Sync may access the Desktop folder (profiles live there) and
+  send notifications. A locally built app is signed ad hoc, so every rebuild counts as a new
+  app and macOS asks again.
 
 - Revoking an OpenVPN certificate can't be undone; the app always asks first.
 - OpenVPN's status file refreshes every 60 s, so OpenVPN transfer speeds update once a
