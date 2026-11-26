@@ -125,6 +125,22 @@ struct ServerListSheet: View {
         return nil
     }
 
+    /// The server's total speed over the last 15 minutes (all devices; download above the line,
+    /// upload below) and how many devices are online, when live monitoring is on.
+    @ViewBuilder private func serverActivity(_ name: String) -> some View {
+        if let w = m.watchers[name], w.link == .live {
+            let cutoff = (w.history.last?.time ?? Date()).addingTimeInterval(-900)
+            HStack(spacing: 8) {
+                Sparkline(history: w.history.filter { $0.time >= cutoff }, name: name, width: 64, height: 22)
+                Text("\(w.onlineDevices.count) online")
+                    .font(.system(.caption, design: .rounded)).monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(width: 52, alignment: .leading)
+            }
+            .help("All devices on \(name), last 15 minutes")
+        }
+    }
+
     private func rename(_ old: String) {
         guard renameProblem(old) == nil, newName != old, !renameBusy else { return }
         renameBusy = true
@@ -170,12 +186,19 @@ struct ServerListSheet: View {
                                     .font(.caption)
                                     .foregroundStyle(renameProblem(name) == nil ? Color.secondary : Color.red)
                             } else {
-                                Text(name).font(.body.weight(.semibold))
+                                HStack(spacing: 10) {
+                                    Text(name).font(.system(.body, design: .rounded).weight(.semibold))
+                                        .lineLimit(1).fixedSize()
+                                    serverActivity(name)
+                                }
                                 Text("\(info.user)@\(info.address.isEmpty ? "?" : info.address)\(info.jump.isEmpty ? "" : ", through \(info.jump) at \(info.privateIP)")")
                                     .font(.caption).foregroundStyle(.secondary)
+                                    .lineLimit(1).truncationMode(.middle)
+                                    .help("\(info.user)@\(info.address)\(info.jump.isEmpty ? "" : ", through \(info.jump) at \(info.privateIP)")")
                             }
                         }
-                        Spacer()
+                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                        .layoutPriority(-1)      // the buttons keep their width; a long address gives way
                         if renaming != name {
                             if name != m.server {
                                 Button("Use") { m.selectServer(name); dismiss() }
@@ -203,7 +226,7 @@ struct ServerListSheet: View {
             }
         }
         .padding(24)
-        .frame(width: 600)
+        .frame(width: 650)
         .glassSheet()
         .sheet(isPresented: $adding) { AddServerSheet().environmentObject(m) }
         .sheet(item: $editing) { EditServerSheet(name: $0.name).environmentObject(m) }
