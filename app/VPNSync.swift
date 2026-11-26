@@ -819,6 +819,12 @@ struct ContentView: View {
         .padding(.bottom, 18)
         .frame(minWidth: 660, minHeight: 720)
         .task {
+            // test hook VPNSYNC_TAB: apply again once the window is up (the initial value isn't always used)
+            switch ProcessInfo.processInfo.environment["VPNSYNC_TAB"] {
+            case "traffic": tab = .traffic
+            case "activity": tab = .activity
+            default: break
+            }
             if m.server.isEmpty { m.showAddServer = true; return }
             await m.check()
             if m.monitoring { m.startMonitoring() }

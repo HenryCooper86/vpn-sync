@@ -4,6 +4,7 @@
 import SwiftUI
 import AppKit
 import UserNotifications
+import Charts
 
 enum LiveLink: Equatable { case off, connecting, live, retrying }
 
@@ -284,9 +285,27 @@ final class ServerWatcher {
         prevOVPNFileTime = ovpnFileTime
         rates = newRates
         accumulate(now: now)
+        if firstSnapshot { injectSampleEventsIfRequested() }
         firstSnapshot = false
         changed()
         if model?.server == server { writeDebugState() }
+    }
+
+    /// Test hook (VPNSYNC_SAMPLE_EVENTS=1): fill the Activity list with sample events for a
+    /// screenshot. They are not notified, counted or saved.
+    func injectSampleEventsIfRequested() {
+        guard ProcessInfo.processInfo.environment["VPNSYNC_SAMPLE_EVENTS"] != nil, events.isEmpty else { return }
+        let now = Date()
+        let online = Array(ovpnLive.keys) + wgLive.keys.filter { wgOnline($0) }
+        let names = (online + ["tv", "laptop", "phone"]).prefix(4)
+        var out: [LiveEvent] = []
+        for (i, minutesAgo) in [2, 5, 9, 14, 18, 23, 31, 37, 44, 52].enumerated() {
+            let n = names[names.startIndex + i % names.count]
+            out.append(LiveEvent(time: now.addingTimeInterval(Double(-minutesAgo * 60)), device: n,
+                                 vpn: i % 2 == 0 ? "OpenVPN" : "WireGuard", connected: i % 3 != 1, ip: "203.0.113.\(10 + i)"))
+        }
+        events = out
+        changed()
     }
 
     private func addEvent(_ e: LiveEvent) {
@@ -696,26 +715,103 @@ struct ActivityView: View {
                 .font(.callout).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 5) {
-                    ForEach(m.events) { e in
-                        HStack(spacing: 10) {
-                            Text(e.time.formatted(date: .omitted, time: .standard))
-                                .font(.system(.caption, design: .rounded)).monospacedDigit()
-                                .foregroundStyle(.secondary)
-                                .frame(width: 70, alignment: .leading)
-                            Circle().fill(e.connected ? t.online : Color.secondary.opacity(0.6)).frame(width: 7, height: 7)
-                            Text(e.device).font(.system(.callout, design: .rounded).weight(.semibold))
-                            Text(e.connected ? "connected" : "disconnected").font(.callout)
-                            Text("on \(e.vpn)\(e.ip == "-" ? "" : " from \(withFlag(e.ip))")").font(.callout).foregroundStyle(.secondary)
-                                .help(countryOf(e.ip) ?? "")
-                            Spacer()
+            VStack(alignment: .leading, spacing: 10) {
+                if tall { lastHour }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 5) {
+                        let latest = latestEventIDs
+                        ForEach(m.events) { e in
+                            HStack(spacing: 10) {
+                                Text(e.time.formatted(date: .omitted, time: .standard))
+                                    .font(.system(.caption, design: .rounded)).monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 70, alignment: .leading)
+                                Circle().fill(e.connected ? t.online : Color.secondary.opacity(0.6)).frame(width: 7, height: 7)
+                                Text(e.device).font(.system(.callout, design: .rounded).weight(.semibold))
+                                Text(e.connected ? "connected" : "disconnected").font(.callout)
+                                Text("on \(e.vpn)\(e.ip == "-" ? "" : " from \(withFlag(e.ip))")").font(.callout).foregroundStyle(.secondary)
+                                    .help(countryOf(e.ip) ?? "")
+                                Spacer()
+                                // the device's speed now, on its newest event only, while it's online
+                                if latest.contains(e.id) && m.isOnline(e.device) {
+                                    Sparkline(history: m.deviceHistory(e.device), name: e.device, width: 70, height: 20)
+                                }
+                            }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxHeight: tall ? .infinity : 104)
             }
-            .frame(maxHeight: tall ? .infinity : 104)
+        }
+    }
+
+    /// Newest event per device (events are newest first).
+    private var latestEventIDs: Set<UUID> {
+        var seen = Set<String>(), ids = Set<UUID>()
+        for e in m.events where !seen.contains(e.device) { seen.insert(e.device); ids.insert(e.id) }
+        return ids
+    }
+
+    // MARK: last hour strip
+
+    private struct Bucket: Identifiable { let minute: Date; let connects: Int; let disconnects: Int; var id: Date { minute } }
+
+    private var buckets: [Bucket] {
+        let cal = Calendar.current
+        let now = Date()
+        var c: [Date: (Int, Int)] = [:]
+        for e in m.events where now.timeIntervalSince(e.time) <= 3600 {
+            let minute = cal.dateInterval(of: .minute, for: e.time)?.start ?? e.time
+            var v = c[minute] ?? (0, 0)
+            if e.connected { v.0 += 1 } else { v.1 += 1 }
+            c[minute] = v
+        }
+        return c.map { Bucket(minute: $0.key, connects: $0.value.0, disconnects: $0.value.1) }.sorted { $0.minute < $1.minute }
+    }
+
+    private var lastHour: some View {
+        let b = buckets
+        let connects = b.reduce(0) { $0 + $1.connects }, disconnects = b.reduce(0) { $0 + $1.disconnects }
+        let top = max(b.map { max($0.connects, $0.disconnects) }.max() ?? 1, 1)
+        let end = Date(), start = end.addingTimeInterval(-3600)
+        return HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Last hour").font(.system(.callout, design: .rounded).weight(.semibold))
+                HStack(spacing: 10) {
+                    legend(TrafficColor.online(t.dark), "\(connects) connect\(connects == 1 ? "" : "s")")
+                    legend(Color.secondary.opacity(0.6), "\(disconnects) disconnect\(disconnects == 1 ? "" : "s")")
+                }
+            }
+            .fixedSize()
+            Chart {
+                ForEach(b) { x in
+                    if x.connects > 0 {
+                        BarMark(x: .value("Minute", x.minute, unit: .minute), y: .value("Connects", x.connects))
+                            .foregroundStyle(TrafficColor.online(t.dark))
+                    }
+                    if x.disconnects > 0 {
+                        BarMark(x: .value("Minute", x.minute, unit: .minute), y: .value("Disconnects", -x.disconnects))
+                            .foregroundStyle(Color.secondary.opacity(0.6))
+                    }
+                }
+                RuleMark(y: .value("Zero", 0)).foregroundStyle(Color.primary.opacity(0.15)).lineStyle(StrokeStyle(lineWidth: 0.5))
+            }
+            .chartXScale(domain: start...end)
+            .chartYScale(domain: -Double(top)...Double(top))
+            .chartXAxis(.hidden)
+            .chartYAxis(.hidden)
+            .frame(height: 30)
+            .help("Connects (above) and disconnects (below) per minute, last hour")
+            .accessibilityLabel("Last hour: \(connects) connects, \(disconnects) disconnects")
+        }
+        .padding(.bottom, 4)
+    }
+
+    private func legend(_ c: Color, _ text: String) -> some View {
+        HStack(spacing: 5) {
+            Capsule().fill(c).frame(width: 10, height: 4)
+            Text(text).font(.caption).foregroundStyle(.secondary).monospacedDigit()
         }
     }
 }
