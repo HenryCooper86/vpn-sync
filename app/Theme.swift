@@ -244,7 +244,7 @@ struct DeviceAvatar: View {
         .accessibilityHidden(true)
     }
 
-    /// "m1-20261123" → M1, "alex3" → P3, "tokyo-iphone" → TI, "laptop" → La
+    /// "m1-20261123" → M1, "anna3" → A3, "home-iphone" → HI, "laptop" → La
     private func initials(_ s: String) -> String {
         let first = s.prefix(1).uppercased()
         let token = s.split(whereSeparator: { $0 == "-" || $0 == "_" }).first.map(String.init) ?? s

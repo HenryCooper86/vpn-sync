@@ -218,7 +218,7 @@ struct MenuBarPanel: View {
                 if wasSelected && !m.server.isEmpty { await m.check() }
             } else {
                 confirmRemove = nil
-                // e.g. "Frankfurt connects through Tokyo; change that first"
+                // e.g. "edge-2 connects through edge-1; change that first"
                 let msg = out.split(separator: "\n").last.map { String($0).replacingOccurrences(of: "vpn-sync: ", with: "") }
                 removeError = (s, "Not removed: \(msg ?? "unknown error").")
             }
