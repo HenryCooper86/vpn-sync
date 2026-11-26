@@ -46,6 +46,7 @@ func showMainWindow(_ openWindow: OpenWindowAction) {
 struct MenuBarPanel: View {
     @ObservedObject var m: Model
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.theme) private var theme
     /// Server waiting for removal confirmation (inline: alerts tend to close menu bar panels).
     @State private var confirmRemove: String?
     @State private var removeError: (server: String, message: String)?
@@ -55,81 +56,100 @@ struct MenuBarPanel: View {
     @FocusState private var nameFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("VPN Sync").font(.system(size: 16, weight: .bold, design: .rounded))
-                Spacer()
-                if m.monitoring {
-                    Text("\(m.onlineEverywhere) online").font(.system(.callout, design: .rounded)).foregroundStyle(.secondary)
-                }
-            }
+        VStack(alignment: .leading, spacing: 12) {
+            header
             if m.servers.isEmpty {
-                Text("No servers yet.").foregroundStyle(.secondary)
+                Text("No servers yet. Open VPN Sync to add one.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                    .glassPanel(18)
             } else {
-                if !m.monitoring {
-                    HStack {
-                        Text("Live monitoring is off.").foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Turn On") { m.setMonitoring(true) }
+                ScrollView {
+                    VStack(spacing: 10) {
+                        ForEach(m.servers, id: \.self) { s in serverCard(s) }
                     }
                 }
-                ForEach(m.servers, id: \.self) { s in serverSection(s) }
+                .scrollIndicators(.never)
+                .frame(maxHeight: 460)
+                .fixedSize(horizontal: false, vertical: true)
             }
-            Divider()
-            Toggle("Notifications", isOn: Binding(get: { m.notify }, set: { m.setNotify($0) }))
-                .disabled(!m.monitoring)
             HStack {
-                Button("Open VPN Sync") { showMainWindow(openWindow) }.glassButton(prominent: true)
+                Button { showMainWindow(openWindow) } label: { Label("Open VPN Sync", systemImage: "macwindow") }
+                    .glassButton(prominent: true)
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }.glassButton()
             }
         }
-        .padding(14)
-        .frame(width: 340)
+        .padding(16)
+        .frame(width: 370)
     }
 
-    @ViewBuilder private func serverSection(_ s: String) -> some View {
+    private var header: some View {
+        HStack(spacing: 12) {
+            SignalOrb(count: m.monitoring ? m.onlineEverywhere : nil,
+                      live: m.watchers.values.contains { $0.link == .live }, size: 54)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("VPN Sync").font(.system(size: 18, weight: .bold, design: .rounded))
+                Text(summary).font(.system(.callout, design: .rounded)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            LiveToggle().environmentObject(m)
+        }
+    }
+
+    private var summary: String {
+        let n = m.servers.count
+        let servers = "\(n) server\(n == 1 ? "" : "s")"
+        guard m.monitoring else { return "Live monitoring is off" }
+        return "\(m.onlineEverywhere) online on \(servers)"
+    }
+
+    @ViewBuilder private func serverCard(_ s: String) -> some View {
         let w = m.watchers[s]
         let online = w?.onlineDevices ?? []
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Circle().fill(linkColor(w?.link ?? .off)).frame(width: 7, height: 7)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Circle().fill(linkColor(w?.link ?? .off)).frame(width: 8, height: 8)
+                    .shadow(color: w?.link == .live ? theme.online.opacity(0.8) : .clear, radius: 3)
                 Button {
                     m.selectServer(s)
                     showMainWindow(openWindow)
-                } label: { Text(s).font(.system(.callout, design: .rounded).weight(.semibold)) }
+                } label: { Text(s).font(.system(size: 15, weight: .semibold, design: .rounded)) }
                     .buttonStyle(.plain)
                     .help("Open \(s) in VPN Sync")
-                Spacer()
                 if m.monitoring {
-                    Text(linkText(w, count: online.count)).font(.caption).foregroundStyle(.secondary)
+                    Text(linkText(w, count: online.count))
+                        .font(.system(.caption, design: .rounded)).foregroundStyle(.secondary)
                 }
+                Spacer()
                 Button {
                     removeError = nil; confirmRemove = nil
                     if renaming == s { renaming = nil } else { renaming = s; newName = s; nameFocused = true }
                 } label: { Image(systemName: "pencil") }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.borderless).foregroundStyle(.secondary)
                     .disabled(removing)
                     .help("Rename \(s)")
+                    .accessibilityLabel("Rename \(s)")
                 Button {
                     removeError = nil; renaming = nil
                     confirmRemove = (confirmRemove == s ? nil : s)
                 } label: { Image(systemName: "trash") }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.borderless).foregroundStyle(.secondary)
                     .disabled(removing)
                     .help("Remove \(s) from VPN Sync")
+                    .accessibilityLabel("Remove \(s)")
             }
             if renaming == s {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 6) {
                         TextField("New name", text: $newName)
                             .textFieldStyle(.roundedBorder)
                             .focused($nameFocused)
                             .onSubmit { rename(s) }
                             .disabled(removing)
-                        Button("Cancel") { renaming = nil }.disabled(removing)
+                        Button("Cancel") { renaming = nil }.glassButton().disabled(removing)
                         Button("Rename") { rename(s) }
-                            .buttonStyle(.borderedProminent)
+                            .glassButton(prominent: true)
                             .disabled(removing || renameProblem(s) != nil || newName == s)
                     }
                     if let p = renameProblem(s), !newName.isEmpty {
@@ -139,47 +159,60 @@ struct MenuBarPanel: View {
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .padding(8)
-                .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+                .padding(10)
+                .glassPanel(14)
             }
             if confirmRemove == s {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Remove \(s) from VPN Sync?").font(.callout.weight(.semibold))
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Remove \(s) from VPN Sync?").font(.system(.callout, design: .rounded).weight(.semibold))
                     Text("Deletes its settings, the copy of its key and its pinned host key on this Mac. The server keeps running, its devices keep working, and its Desktop folder is kept.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     HStack {
                         if removing { ProgressView().controlSize(.small) }
                         Spacer()
-                        Button("Cancel") { confirmRemove = nil }.disabled(removing)
+                        Button("Cancel") { confirmRemove = nil }.glassButton().disabled(removing)
                         Button("Remove", role: .destructive) { remove(s) }
-                            .buttonStyle(.borderedProminent).tint(.red).disabled(removing)
+                            .tint(.red).glassButton(prominent: true).disabled(removing)
                     }
                 }
-                .padding(8)
-                .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                .padding(10)
+                .glassPanel(14, tint: .red)
             }
             if let e = removeError, e.server == s {
                 Text(e.message).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
             }
             if m.monitoring && w?.link == .live {
                 if online.isEmpty {
-                    Text("No devices online").font(.caption).foregroundStyle(.secondary).padding(.leading, 13)
+                    Text("No devices online").font(.callout).foregroundStyle(.secondary)
                 } else {
-                    ForEach(online, id: \.name) { d in
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            LiveDot(online: true).scaleEffect(0.7)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(d.name).font(.callout)
-                                Text(d.detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    VStack(spacing: 8) {
+                        ForEach(online, id: \.name) { d in
+                            HStack(spacing: 10) {
+                                DeviceAvatar(name: d.name, online: true, size: 26)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(d.name).font(.system(size: 13, weight: .semibold, design: .rounded))
+                                    Text(d.via).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                                Spacer(minLength: 6)
+                                if let r = d.rate {
+                                    VStack(alignment: .trailing, spacing: 0) {
+                                        Label(formatRate(r.down), systemImage: "arrow.down")
+                                        Label(formatRate(r.up), systemImage: "arrow.up").foregroundStyle(.secondary)
+                                    }
+                                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                                    .monospacedDigit()
+                                    .labelStyle(TightLabel())
+                                }
                             }
                         }
-                        .padding(.leading, 6)
                     }
                 }
+            } else if m.monitoring && (w?.link == .retrying) {
+                Text("Can't reach it right now. Retrying.").font(.callout).foregroundStyle(.secondary)
             }
         }
-        .padding(10)
-        .glassPanel(16)
+        .padding(12)
+        .glassPanel(18)
     }
 
     private func renameProblem(_ s: String) -> String? {
@@ -227,7 +260,7 @@ struct MenuBarPanel: View {
 
     private func linkColor(_ l: LiveLink) -> Color {
         switch l {
-        case .live: return .green
+        case .live: return theme.online
         case .connecting, .retrying: return .orange
         case .off: return .secondary
         }
@@ -236,8 +269,25 @@ struct MenuBarPanel: View {
         switch w?.link ?? .off {
         case .live: return "\(count) online"
         case .connecting: return "connecting…"
-        case .retrying: return "can't reach, retrying…"
+        case .retrying: return "unreachable"
         case .off: return "not monitored"
         }
     }
 }
+
+/// Test hook: with VPNSYNC_PANEL_PREVIEW set, also show the menu bar panel in an ordinary
+/// window so it can be screenshotted without clicking the menu bar.
+@MainActor
+func openPanelPreviewIfRequested(_ m: Model) {
+    guard ProcessInfo.processInfo.environment["VPNSYNC_PANEL_PREVIEW"] != nil else { return }
+    let host = NSHostingView(rootView: Themed { MenuBarPanel(m: m).environmentObject(m) })
+    let w = NSWindow(contentRect: NSRect(x: 80, y: 120, width: 370, height: 520),
+                     styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+    w.title = "Menu bar panel preview"
+    w.titlebarAppearsTransparent = true
+    w.contentView = host
+    w.isReleasedWhenClosed = false
+    w.makeKeyAndOrderFront(nil)
+    panelPreviewWindow = w
+}
+@MainActor var panelPreviewWindow: NSWindow?

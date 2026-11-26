@@ -130,7 +130,8 @@ extension View {
     /// accent marks the one or two main actions on screen.
     @ViewBuilder func glassButton(prominent: Bool = false) -> some View {
         if #available(macOS 26.0, *) {
-            if prominent { self.buttonStyle(.glassProminent) } else { self.buttonStyle(.glass).tint(nil) }
+            // .clear, not nil: a nil tint falls back to the system accent colour in active windows
+            if prominent { self.buttonStyle(.glassProminent) } else { self.buttonStyle(.glass).tint(.clear) }
         } else {
             if prominent { self.buttonStyle(.borderedProminent) } else { self.buttonStyle(.bordered).tint(nil) }
         }
@@ -164,13 +165,14 @@ struct SignalOrb: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let count: Int?
     let live: Bool
+    var size: CGFloat = 78
     @State private var ripple = 0
 
     var body: some View {
         ZStack {
             Circle()
                 .fill(AngularGradient(colors: [t.glowA, t.glowB, t.glowA.opacity(0.6), t.glowA], center: .center))
-                .blur(radius: 14)
+                .blur(radius: size * 0.18)
                 .opacity(live ? 0.85 : 0.25)
                 .scaleEffect(1.05)
             if ripple > 0 { RippleRing(color: t.online).id(ripple) }
@@ -181,14 +183,16 @@ struct SignalOrb: View {
                                                               startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1.2))
             VStack(spacing: -3) {
                 Text(count.map(String.init) ?? "–")
-                    .font(.system(size: 30, weight: .semibold, design: .rounded))
+                    .font(.system(size: size * 0.385, weight: .semibold, design: .rounded))
                     .monospacedDigit()
                     .contentTransition(.numericText())
-                Text("online").font(.system(size: 11, weight: .medium, design: .rounded)).opacity(0.75)
+                if size >= 60 {
+                    Text("online").font(.system(size: 11, weight: .medium, design: .rounded)).opacity(0.75)
+                }
             }
             .foregroundStyle(.primary)
         }
-        .frame(width: 78, height: 78)
+        .frame(width: size, height: size)
         .animation(.snappy, value: count)
         .onChange(of: count) { old, new in
             if let o = old, let n = new, n > o, !reduceMotion { ripple += 1 }
@@ -217,6 +221,7 @@ struct DeviceAvatar: View {
     @Environment(\.theme) private var t
     let name: String
     let online: Bool?
+    var size: CGFloat = 34
 
     var body: some View {
         let h = Double(stableHash(name) % 1000) / 1000
@@ -227,15 +232,15 @@ struct DeviceAvatar: View {
             Circle().fill(LinearGradient(colors: [top, bottom], startPoint: .top, endPoint: .bottom))
             Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1)
             Text(initials(name))
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .font(.system(size: size * 0.38, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white)
         }
-        .frame(width: 34, height: 34)
+        .frame(width: size, height: size)
         .overlay(alignment: .bottomTrailing) {
             if let online {
                 Circle()
                     .fill(online ? t.online : Color.gray.opacity(0.7))
-                    .frame(width: 11, height: 11)
+                    .frame(width: size * 0.32, height: size * 0.32)
                     .overlay(Circle().stroke(t.dark ? Color.black.opacity(0.55) : .white, lineWidth: 2))
                     .shadow(color: online ? t.online.opacity(0.8) : .clear, radius: 4)
                     .offset(x: 2, y: 2)

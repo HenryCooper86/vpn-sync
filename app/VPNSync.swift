@@ -1093,6 +1093,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated {
             Notifier.shared.setup()
             if Model.shared?.notify ?? true { Notifier.shared.requestPermission() }  // macOS asks only once
+            if let m = Model.shared { openPanelPreviewIfRequested(m) }
         }
     }
     func applicationWillTerminate(_ notification: Notification) {

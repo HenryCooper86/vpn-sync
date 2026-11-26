@@ -80,18 +80,21 @@ final class ServerWatcher {
     /// Every server's changes refresh the UI: the menu bar shows all servers.
     private func changed() { model?.objectWillChange.send() }
 
-    /// Devices connected right now, online first by name.
-    var onlineDevices: [(name: String, detail: String)] {
+    /// Devices connected right now, by name: how each is connected and how fast.
+    var onlineDevices: [(name: String, via: String, rate: Rate?)] {
         let names = Set(ovpnLive.keys).union(wgLive.keys.filter { wgOnline($0) }).sorted {
             $0.localizedStandardCompare($1) == .orderedAscending
         }
         return names.map { n in
-            var via: [String] = []
-            if let o = ovpnLive[n] { via.append("OpenVPN \(o.realIP)") }
-            if wgOnline(n), let w = wgLive[n] { via.append("WireGuard \(w.endpoint ?? "?")") }
-            var d = via.joined(separator: " · ")
-            if let r = rates[n] { d += " · ↓\(formatRate(r.down)) ↑\(formatRate(r.up))" }
-            return (n, d)
+            let o = ovpnLive[n], w = wgOnline(n) ? wgLive[n] : nil
+            let via: String
+            switch (o, w) {
+            case let (o?, nil): via = "OpenVPN from \(o.realIP)"
+            case let (nil, w?): via = "WireGuard from \(w.endpoint ?? "an unknown address")"
+            case let (o?, _?): via = "OpenVPN and WireGuard from \(o.realIP)"
+            default: via = ""
+            }
+            return (n, via, rates[n])
         }
     }
 
