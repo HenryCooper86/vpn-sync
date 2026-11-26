@@ -12,6 +12,7 @@
 #   TOTALS <iface> <today rx> <today tx> <month rx> <month tx>   (bytes, from vnstat; every ~30 s)
 #   DEVINFO <name> <platform> <app>   (what OpenVPN clients report, last 30 days; every ~5 min)
 #   DAY   <yyyy-mm-dd> <rx> <tx>       (server traffic per day, last 30 days, from vnstat; every ~5 min)
+#   USAGE / LIMIT / PAUSED             (per-device usage, limits and pauses from vpn-usage; every ~30 s)
 #   END
 set -euo pipefail
 # shellcheck source=../lib/common.sh
@@ -106,8 +107,10 @@ devinfo() { # platform/app each OpenVPN client reported (IV_PLAT / IV_GUI_VER), 
 		END { for (n in plat) print "DEVINFO\t"n"\t"plat[n]"\t"(n in app ? app[n] : "-") }'
 }
 
+usage() { [[ -x /usr/local/sbin/vpn-usage ]] && /usr/local/sbin/vpn-usage report 2>/dev/null; return 0; }
+
 if [[ $interval -eq 0 ]]; then
-	snapshot; totals; devinfo; daily; echo "END"; exit 0
+	snapshot; totals; devinfo; daily; usage; echo "END"; exit 0
 fi
 last=$(date +%s.%N)
 n=0
@@ -116,7 +119,7 @@ while :; do
 	now=$(date +%s.%N)
 	events_since "$last"
 	last=$now
-	(( n % 10 == 0 )) && totals
+	(( n % 10 == 0 )) && { totals; usage; }
 	(( n % 100 == 0 )) && { devinfo; daily; }
 	n=$((n + 1))
 	echo "END"

@@ -114,6 +114,9 @@ final class Model: ObservableObject {
     /// One live watcher per server, so notifications cover every server, not just the selected one.
     var watchers: [String: ServerWatcher] = [:]
     @Published var confirmService: ServiceAction?
+    /// Latest usage report per server (Usage.swift).
+    @Published var usageByServer: [String: UsageState] = [:]
+    @Published var limitTarget: LimitTarget?
     /// The Desktop read is taking long: probably waiting for the user to allow access.
     @Published var desktopWaiting = false
     var recovering: Set<String> = []
@@ -524,9 +527,19 @@ struct DeviceRow: View {
                     if device.wg != nil && device.ovpn == nil { Badge(text: "WireGuard only", color: .cyan) }
                     if device.ovpn == nil && device.wg == nil { Badge(text: "no profile file", color: .secondary) }
                     if m.isPinned(device.name) { LucideIcon("star", size: 11).foregroundStyle(.yellow).help("Pinned") }
+                    if let p = m.pauseInfo(device.name) {
+                        Label("Paused", lucide: "pause", size: 10)
+                            .labelStyle(TightLabel())
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .background(Color.orange.opacity(0.16), in: Capsule())
+                            .help(p.label)
+                    }
                 }
                 Text(kindLine).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 LiveLine(name: device.name)
+                UsageLine(name: device.name)
             }
             Spacer(minLength: 8)
             if m.isOnline(device.name) {
@@ -566,6 +579,15 @@ struct DeviceRow: View {
                         }
                     }
                     Button(m.isPinned(device.name) ? "Unpin" : "Pin to Top") { m.togglePin(device.name) }
+                    Divider()
+                    if m.pauseInfo(device.name) != nil {
+                        Button("Resume Internet") { Task { await m.setPaused(device.name, false) } }.disabled(m.busy)
+                    } else {
+                        Button("Pause Internet") { Task { await m.setPaused(device.name, true) } }.disabled(m.busy)
+                    }
+                    Button(m.usageLimit(device.name) == nil ? "Set Usage Limit…" : "Edit Usage Limit…") {
+                        m.limitTarget = LimitTarget(server: m.server, device: device.name)
+                    }
                     Divider()
                     Button("Show in Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting([device.ovpn, device.wg].compactMap { $0 })
@@ -1126,6 +1148,8 @@ struct ContentView: View {
             if let p = m.pendingQR { m.pendingQR = nil; m.qrDevice = p }
         }) { AddDeviceSheet().environmentObject(m) }
         .sheet(isPresented: $m.showBatchAdd) { BatchAddSheet().environmentObject(m) }
+        // on its own view: many .sheet modifiers on one view don't all present
+        .background(Color.clear.sheet(item: $m.limitTarget) { LimitSheet(target: $0).environmentObject(m) })
     }
 
     @ViewBuilder private var devicesList: some View {

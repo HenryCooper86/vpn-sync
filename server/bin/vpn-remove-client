@@ -47,6 +47,8 @@ for name in "$@"; do
 	for f in "$OVPN_DIR/$name.ovpn" "$WG_DIR/$name.conf" "$WG_DIR/$name-wireguard-qr.png"; do
 		[[ -e "$f" ]] && mv "$f" "$trash/"
 	done
+	# drop its usage limit and any pause
+	[[ -x /usr/local/sbin/vpn-usage ]] && /usr/local/sbin/vpn-usage forget "$name" >/dev/null 2>&1 || true
 	echo "REMOVED=$name"
 done
 chmod -R go-rwx "$trash"

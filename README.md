@@ -30,6 +30,12 @@ A macOS app and command-line tool for running your own OpenVPN + WireGuard serve
   `~/.config/vpn-sync/geo/`. The app refreshes it automatically every month. No address is
   sent anywhere.
 - **Control services:** start, stop or restart OpenVPN and WireGuard, or reboot the server.
+- **Usage limits:** each server counts every device's data per day (every minute, so it keeps
+  counting while the app is closed). Set a daily and/or monthly limit per device that either
+  notifies you (at 80% and 100%) or also pauses the device. **Pause Internet** blocks a
+  device's traffic on the server with a firewall rule: it stays connected, nothing is revoked,
+  and **Resume Internet** undoes it. A limit pause lifts at midnight (daily) or on the 1st
+  (monthly); days follow the Mac's time zone.
 - **Menu bar:** a shield with the number of devices online across all servers; click it to
   see who is connected where, or rename (pencil) or remove (trash) a server. Closing the
   window keeps VPN Sync running there (quit from
@@ -68,7 +74,8 @@ with a tunnel narrowing to a lit keyhole, is drawn by `app/make-icon.swift`.
    **QR** to show a WireGuard code, **Sync Now** after an IP change, and **Live** for
    monitoring (the bell turns notifications on or off). Use the **OpenVPN / WireGuard**
    menus to start, stop or restart a VPN and **Server → Reboot Server…** to reboot. Switch
-   servers from the server name menu; edit IP, key or user in **Servers**.
+   servers from the server name menu; edit IP, key or user in **Servers**. A device's
+   **⋯** menu has **Pause Internet** and **Set Usage Limit…**.
 
 ## Command line
 
@@ -82,6 +89,10 @@ vpn-sync status <server>                   who is connected now
 vpn-sync watch <server> [--interval N]     stream connection snapshots
 vpn-sync service <server> <openvpn|wireguard|all> <start|stop|restart|status>
 vpn-sync reboot <server>
+vpn-sync usage <server>                    data used per device today and this month
+vpn-sync limit <server> <device> --daily 2GB --monthly 50GB --action alert|pause
+vpn-sync limit <server> <device> --clear
+vpn-sync pause | resume <server> <device>  block or unblock a device's traffic
 vpn-sync server list | add | edit | rename | remove | hostkey | probe | install
 ```
 
@@ -98,6 +109,7 @@ Run `vpn-sync --help` for all options.
 | `server/bin/vpn-add-client`, `vpn-remove-client` | Add/remove devices on both VPNs by driving the Nyr menus with `expect`. All names are validated first. Removed files are kept in `/root/vpn-sync-backups/`. |
 | `server/bin/vpn-export-profiles` | Streams all client profiles as a tarball. |
 | `server/bin/vpn-status` | Connected devices (OpenVPN status file and log, `wg show` handshakes) and service state. |
+| `server/bin/vpn-usage` | Per-device data per day in `/var/lib/vpn-sync/usage/` (systemd timer, every minute), limits, and pausing via a `VPNSYNC-BLOCK` chain first in `FORWARD` (IPv4 and IPv6). |
 | `server/bin/vpn-service` | Start/stop/restart the VPN services, or reboot. Stopped services start again at boot. |
 
 Local state lives in `~/.config/vpn-sync/`: one `<server>.conf` per server (see

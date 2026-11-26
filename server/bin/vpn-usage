@@ -1,0 +1,261 @@
+#!/usr/bin/env bash
+# vpn-usage — per-device data usage, limits and pausing.
+#
+#   vpn-usage collect                 (run every minute by vpn-usage.timer) add up each device's
+#                                     traffic since the last run, apply limits, enforce pauses
+#   vpn-usage report                  USAGE / LIMIT / PAUSED lines (see below)
+#   vpn-usage limit <name> [--daily BYTES] [--monthly BYTES] [--action alert|pause]
+#   vpn-usage limit <name> --clear
+#                                     (--tz Area/City sets the time zone days and months follow)
+#   vpn-usage pause <name>            block the device's traffic (nothing is revoked)
+#   vpn-usage forget <name>           drop a removed device's limit, pause and allowance
+#   vpn-usage resume <name>           unblock it; if it was paused by a limit, it stays allowed
+#                                     for the rest of that day/month
+#
+# Report lines (tab separated, bytes; "down" = to the device, "up" = from it):
+#   USAGEAT <epoch> <today yyyy-mm-dd>   (first line; the lines below are the complete state)
+#   USAGE  <name> <today down> <today up> <month down> <month up>
+#   LIMIT  <name> <daily|0> <monthly|0> <alert|pause>
+#   PAUSED <name> <manual|daily|monthly> <since yyyy-mm-dd>
+#
+# Pausing drops the device's VPN addresses (IPv4 and IPv6) in the VPNSYNC-BLOCK chain, which is
+# the first rule of FORWARD: it can still connect but gets no internet. Data lives in
+# /var/lib/vpn-sync/usage/ (one file per day).
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "${VPN_SYNC_LIB:-/usr/local/lib/vpn-sync}/common.sh"
+require_root
+
+DIR=/var/lib/vpn-sync/usage
+LIMITS="$DIR/limits.tsv"        # name daily monthly action
+PAUSED="$DIR/paused.tsv"        # name reason since
+ALLOW="$DIR/allow.tsv"          # name period   (resumed until that day/month ends)
+LAST="$DIR/last.tsv"            # key rx tx     (counters at the previous run)
+mkdir -p "$DIR"; chmod 700 "$DIR"
+touch "$LIMITS" "$PAUSED" "$ALLOW" "$LAST"
+# days and months follow the owner's time zone (set by "limit --tz", e.g. from the Mac)
+if [[ -s "$DIR/tz" ]]; then TZ=$(cat "$DIR/tz"); export TZ; fi
+
+TODAY=$(date +%F); MONTH=$(date +%Y-%m)
+DAYFILE="$DIR/day-$TODAY.tsv"; touch "$DAYFILE"
+
+OVPN_STATUS=""
+for f in /run/openvpn-server/status-server.log /var/log/openvpn/openvpn-status.log; do
+	[[ -f "$f" ]] && { OVPN_STATUS="$f"; break; }
+done
+
+known_device() { # a device that exists on this server (either VPN)
+	local n="$1"
+	[[ -f "$OVPN_PKI/index.txt" ]] && grep -qE "^V.*/CN=$n\$" "$OVPN_PKI/index.txt" && return 0
+	[[ -f "$WG_CONF" ]] && grep -qx "# BEGIN_PEER $n" "$WG_CONF" && return 0
+	return 1
+}
+
+# set_line FILE NAME LINE: replace NAME's line (first field) with LINE ("" removes it)
+set_line() {
+	local file="$1" name="$2" line="$3" tmp
+	tmp=$(mktemp "$DIR/.tmp.XXXXXX")
+	awk -F'\t' -v n="$name" '$1 != n' "$file" > "$tmp"
+	[[ -n "$line" ]] && printf '%s\n' "$line" >> "$tmp"
+	chmod 600 "$tmp"; mv "$tmp" "$file"
+}
+
+month_totals() { # name down up, this month
+	cat "$DIR"/day-"$MONTH"-*.tsv 2>/dev/null | awk -F'\t' 'NF>=3 {d[$1]+=$2; u[$1]+=$3} END {for (n in d) printf "%s\t%.0f\t%.0f\n", n, d[n], u[n]}'
+}
+
+# ---------------------------------------------------------------- counting
+
+current_counters() { # key name rx tx since    (server view: rx = from device, tx = to device)
+	if [[ -f "$WG_CONF" ]] && command -v wg >/dev/null; then
+		# public key → name from wg0.conf, then the live counters
+		awk -F'\t' '
+			FILENAME==ARGV[1] { nm[$1]=$2; next }
+			NF>=8 && ($1 in nm) { print "wg:"nm[$1]"\t"nm[$1]"\t"$6"\t"$7"\t0" }' \
+			<(awk '/^# BEGIN_PEER /{n=$3} /^PublicKey/{if(n!=""){print $3"\t"n; n=""}}' "$WG_CONF") \
+			<(wg show wg0 dump 2>/dev/null)
+	fi
+	if [[ -n "$OVPN_STATUS" ]]; then
+		awk -F, '$1=="CLIENT_LIST" && $2!="UNDEF" { print "ovpn:"$2":"$9"\t"$2"\t"$6"\t"$7"\t"$9 }' "$OVPN_STATUS"
+	fi
+}
+
+collect_traffic() {
+	local lastrun=0
+	[[ -f "$DIR/lastrun" ]] && lastrun=$(cat "$DIR/lastrun")
+	local now; now=$(date +%s)
+	local cur; cur=$(current_counters)
+	# deltas since the last run; a counter that went down is a new session (count from zero);
+	# a session seen for the first time counts in full only if it started after the last run
+	local deltas
+	deltas=$(awk -F'\t' -v lastrun="$lastrun" '
+		FILENAME==ARGV[1] { lrx[$1]=$2; ltx[$1]=$3; next }
+		{
+			key=$1; name=$2; rx=$3+0; tx=$4+0; since=$5+0
+			if (key in lrx) {
+				drx = (rx >= lrx[key]) ? rx - lrx[key] : rx
+				dtx = (tx >= ltx[key]) ? tx - ltx[key] : tx
+			} else if (since > 0 && lastrun > 0 && since >= lastrun) { drx = rx; dtx = tx }
+			else { drx = 0; dtx = 0 }
+			if (drx > 0 || dtx > 0) printf "%s\t%.0f\t%.0f\n", name, dtx, drx
+		}' "$LAST" <(printf '%s\n' "$cur"))
+	# remember counters for next time
+	printf '%s\n' "$cur" | awk -F'\t' 'NF>=4 {print $1"\t"$3"\t"$4}' > "$LAST.new" && mv "$LAST.new" "$LAST"
+	echo "$now" > "$DIR/lastrun"
+	[[ -n "$deltas" ]] || return 0
+	# add to today's totals
+	local tmp; tmp=$(mktemp "$DIR/.tmp.XXXXXX")
+	awk -F'\t' 'NF>=3 {d[$1]+=$2; u[$1]+=$3} END {for (n in d) printf "%s\t%.0f\t%.0f\n", n, d[n], u[n]}' "$DAYFILE" <(printf '%s\n' "$deltas") > "$tmp"
+	chmod 600 "$tmp"; mv "$tmp" "$DAYFILE"
+}
+
+# ---------------------------------------------------------------- limits and pauses
+
+apply_limits() {
+	# lift limit pauses whose period is over, and old resume allowances
+	local tmp; tmp=$(mktemp "$DIR/.tmp.XXXXXX")
+	awk -F'\t' -v d="$TODAY" -v m="$MONTH" '
+		$2=="manual" {print; next}
+		$2=="daily" && $3==d {print; next}
+		$2=="monthly" && substr($3,1,7)==m {print}' "$PAUSED" > "$tmp"; mv "$tmp" "$PAUSED"
+	tmp=$(mktemp "$DIR/.tmp.XXXXXX")
+	awk -F'\t' -v d="$TODAY" -v m="$MONTH" '$2==d || $2==m' "$ALLOW" > "$tmp"; mv "$tmp" "$ALLOW"
+	chmod 600 "$PAUSED" "$ALLOW"
+
+	local months name daily monthly action; months=$(month_totals)
+	while IFS=$'\t' read -r name daily monthly action; do
+		[[ -n "$name" && "$action" == pause ]] || continue
+		grep -qP "^\Q$name\E\t" "$PAUSED" && continue
+		local day_used month_used
+		day_used=$(awk -F'\t' -v n="$name" '$1==n {printf "%.0f\n", $2+$3}' "$DAYFILE"); day_used=${day_used:-0}
+		month_used=$(awk -F'\t' -v n="$name" '$1==n {printf "%.0f\n", $2+$3}' <<< "$months"); month_used=${month_used:-0}
+		if (( daily > 0 && day_used >= daily )) && ! grep -qP "^\Q$name\E\t$TODAY$" "$ALLOW"; then
+			printf '%s\tdaily\t%s\n' "$name" "$TODAY" >> "$PAUSED"
+		elif (( monthly > 0 && month_used >= monthly )) && ! grep -qP "^\Q$name\E\t$MONTH$" "$ALLOW"; then
+			printf '%s\tmonthly\t%s\n' "$name" "$TODAY" >> "$PAUSED"
+		fi
+	done < "$LIMITS"
+}
+
+device_addresses() { # all VPN addresses (v4 and v6) of a device, one per line
+	local n="$1"
+	if [[ -f "$WG_CONF" ]]; then
+		awk -v n="$n" '/^# BEGIN_PEER /{on=($3==n)} on && /^AllowedIPs/ {sub(/^AllowedIPs *= */,""); gsub(/ /,""); print; on=0}' "$WG_CONF" \
+			| tr ',' '\n' | sed 's#/.*##'
+	fi
+	[[ -f /etc/openvpn/server/ipp.txt ]] && awk -F, -v n="$n" '$1==n {print $2; if ($3!="") print $3}' /etc/openvpn/server/ipp.txt
+	[[ -n "$OVPN_STATUS" ]] && awk -F, -v n="$n" '$1=="CLIENT_LIST" && $2==n {print $4; if ($5!="") print $5}' "$OVPN_STATUS"
+	return 0
+}
+
+enforce() { # rebuild the VPNSYNC-BLOCK chains from paused.tsv
+	local ipt
+	for ipt in iptables ip6tables; do
+		command -v "$ipt" >/dev/null || continue
+		"$ipt" -N VPNSYNC-BLOCK 2>/dev/null || true
+		"$ipt" -F VPNSYNC-BLOCK
+		# keep the jump first in FORWARD (the VPN installers insert their own ACCEPT rules on restart)
+		if [[ "$("$ipt" -S FORWARD | sed -n 2p)" != "-A FORWARD -j VPNSYNC-BLOCK" ]]; then
+			while "$ipt" -D FORWARD -j VPNSYNC-BLOCK 2>/dev/null; do :; done
+			"$ipt" -I FORWARD 1 -j VPNSYNC-BLOCK
+		fi
+	done
+	local name addr
+	while IFS=$'\t' read -r name _; do
+		[[ -n "$name" ]] || continue
+		while read -r addr; do
+			[[ -n "$addr" ]] || continue
+			if [[ "$addr" == *:* ]]; then ipt=ip6tables; else ipt=iptables; fi
+			"$ipt" -A VPNSYNC-BLOCK -s "$addr" -j DROP 2>/dev/null || true
+			"$ipt" -A VPNSYNC-BLOCK -d "$addr" -j DROP 2>/dev/null || true
+		done < <(device_addresses "$name" | sort -u)
+	done < "$PAUSED"
+}
+
+# ---------------------------------------------------------------- commands
+
+parse_bytes() { # "5GB", "500MB", "1.5GB", "123" → bytes (binary units)
+	local v="${1^^}" n unit
+	[[ "$v" =~ ^([0-9]+(\.[0-9]+)?)\ *([KMGT]?)I?B?$ ]] || { echo "bad size: $1" >&2; exit 64; }
+	n="${BASH_REMATCH[1]}"; unit="${BASH_REMATCH[3]}"
+	awk -v n="$n" -v u="$unit" 'BEGIN { m=1; if(u=="K")m=1024; if(u=="M")m=1024^2; if(u=="G")m=1024^3; if(u=="T")m=1024^4; printf "%.0f\n", n*m }'
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+	collect)
+		collect_traffic
+		apply_limits
+		enforce
+		find "$DIR" -name 'day-*.tsv' -mtime +400 -delete 2>/dev/null || true
+		;;
+	report)
+		months=$(month_totals)
+		printf 'USAGEAT\t%s\t%s\n' "$(date +%s)" "$TODAY"
+		awk -F'\t' -v OFS='\t' '
+			FILENAME==ARGV[1] { if (NF>=3) { td[$1]=$2; tu[$1]=$3; seen[$1]=1 } next }
+			NF>=3 { md[$1]=$2; mu[$1]=$3; seen[$1]=1 }
+			END { for (n in seen) printf "USAGE\t%s\t%.0f\t%.0f\t%.0f\t%.0f\n", n, td[n], tu[n], md[n], mu[n] }' "$DAYFILE" <(printf '%s\n' "$months")
+		awk -F'\t' -v OFS='\t' 'NF>=4 {print "LIMIT", $1, $2, $3, $4}' "$LIMITS"
+		awk -F'\t' -v OFS='\t' 'NF>=3 {print "PAUSED", $1, $2, $3}' "$PAUSED"
+		;;
+	limit)
+		name="${1:-}"; shift || true
+		[[ "$name" =~ $NAME_RE ]] || { echo "invalid device name" >&2; exit 64; }
+		known_device "$name" || { echo "no device named '$name' on this server" >&2; exit 66; }
+		[[ "${1:-}" == --tz ]] && shift 2   # only meaningful together with a limit
+		if [[ "${1:-}" == --clear ]]; then
+			set_line "$LIMITS" "$name" ""
+			# a pause caused by the limit goes away with it
+			tmp=$(mktemp "$DIR/.tmp.XXXXXX"); awk -F'\t' -v n="$name" '!($1==n && $2!="manual")' "$PAUSED" > "$tmp"; mv "$tmp" "$PAUSED"
+			enforce; echo "cleared the limit for $name"; exit 0
+		fi
+		daily=0 monthly=0 action=alert
+		old=$(awk -F'\t' -v n="$name" '$1==n' "$LIMITS")
+		[[ -n "$old" ]] && IFS=$'\t' read -r _ daily monthly action <<< "$old"
+		while [[ $# -gt 0 ]]; do
+			case "$1" in
+				--daily) daily=$(parse_bytes "${2:-}"); shift ;;
+				--monthly) monthly=$(parse_bytes "${2:-}"); shift ;;
+				--action) action="${2:-}"; [[ "$action" =~ ^(alert|pause)$ ]] || { echo "--action: alert or pause" >&2; exit 64; }; shift ;;
+				--tz) tz="${2:-}"; shift
+					if [[ "$tz" =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ && -f "/usr/share/zoneinfo/$tz" ]]; then
+						printf '%s\n' "$tz" > "$DIR/tz"
+					else echo "unknown time zone '$tz' (ignored)" >&2; fi ;;
+				*) echo "unknown option: $1" >&2; exit 64 ;;
+			esac
+			shift
+		done
+		(( daily > 0 || monthly > 0 )) || { echo "give --daily and/or --monthly (or --clear)" >&2; exit 64; }
+		set_line "$LIMITS" "$name" "$(printf '%s\t%s\t%s\t%s' "$name" "$daily" "$monthly" "$action")"
+		# a stricter or looser limit takes effect now
+		tmp=$(mktemp "$DIR/.tmp.XXXXXX"); awk -F'\t' -v n="$name" '!($1==n && $2!="manual")' "$PAUSED" > "$tmp"; mv "$tmp" "$PAUSED"
+		apply_limits; enforce
+		echo "limit for $name: daily $daily, monthly $monthly, action $action"
+		;;
+	pause)
+		name="${1:-}"
+		[[ "$name" =~ $NAME_RE ]] || { echo "invalid device name" >&2; exit 64; }
+		known_device "$name" || { echo "no device named '$name' on this server" >&2; exit 66; }
+		set_line "$PAUSED" "$name" "$(printf '%s\tmanual\t%s' "$name" "$TODAY")"
+		enforce; echo "paused $name"
+		;;
+	forget)
+		name="${1:-}"
+		[[ "$name" =~ $NAME_RE ]] || { echo "invalid device name" >&2; exit 64; }
+		for f in "$LIMITS" "$PAUSED" "$ALLOW"; do set_line "$f" "$name" ""; done
+		enforce
+		;;
+	resume)
+		name="${1:-}"
+		[[ "$name" =~ $NAME_RE ]] || { echo "invalid device name" >&2; exit 64; }
+		reason=$(awk -F'\t' -v n="$name" '$1==n {print $2}' "$PAUSED")
+		set_line "$PAUSED" "$name" ""
+		# resumed from a limit pause: stay allowed until that day/month ends
+		[[ "$reason" == daily ]] && set_line "$ALLOW" "$name" "$(printf '%s\t%s' "$name" "$TODAY")"
+		[[ "$reason" == monthly ]] && set_line "$ALLOW" "$name" "$(printf '%s\t%s' "$name" "$MONTH")"
+		enforce; echo "resumed $name"
+		;;
+	*)
+		awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "$0"; exit 64 ;;
+esac

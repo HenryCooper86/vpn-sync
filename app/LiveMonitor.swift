@@ -68,6 +68,7 @@ final class ServerWatcher {
     private var snapWG: [String: WGPeer] = [:]
     private var snapServices: [String: ServiceState] = [:]
     private var snapTime = 0
+    private var snapUsage: UsageState?
     private var ovpnFileTime = 0
     private var prevOVPNFileTime = 0
     private var ovpnOverride: [String: (connected: Bool, time: Int, ip: String)] = [:]
@@ -198,6 +199,11 @@ final class ServerWatcher {
         case "SNAPSHOT":
             snapTime = Int(f[safe: 1] ?? "") ?? Int(Date().timeIntervalSince1970)
             snapOVPN = [:]; snapWG = [:]; snapServices = [:]
+        case "USAGEAT":
+            snapUsage = UsageState()
+            _ = snapUsage?.apply(f)
+        case "USAGE", "LIMIT", "PAUSED":
+            _ = snapUsage?.apply(f)
         case "OVPNTIME":
             ovpnFileTime = Int(f[safe: 1] ?? "") ?? 0
         case "DEVINFO" where f.count >= 4:
@@ -226,6 +232,7 @@ final class ServerWatcher {
             addEvent(LiveEvent(time: Date(timeIntervalSince1970: TimeInterval(t)), device: name, vpn: "OpenVPN",
                                connected: connected, ip: ip))
         case "END":
+            if let u = snapUsage { snapUsage = nil; model?.setUsage(u, server: server) }
             commitSnapshot()
         default:
             break

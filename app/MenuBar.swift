@@ -293,7 +293,7 @@ func openPanelPreviewIfRequested(_ m: Model) {
 }
 @MainActor var panelPreviewWindow: NSWindow?
 
-/// Test hook: VPNSYNC_PREVIEW=settings|servers|addserver|edit|add|batch|qr opens that window or
+/// Test hook: VPNSYNC_PREVIEW=settings|servers|addserver|edit|add|batch|qr|limit opens that window or
 /// sheet a few seconds after launch, for screenshots without clicking.
 @MainActor
 func openSheetPreviewIfRequested(_ m: Model) {
@@ -309,6 +309,10 @@ func openSheetPreviewIfRequested(_ m: Model) {
         case "add": m.showAddDevice = true
         case "batch": m.showBatchAdd = true
         case "qr": m.qrDevice = m.devices.first { $0.qr != nil }
+        case "limit":
+            if let d = ProcessInfo.processInfo.environment["VPNSYNC_PREVIEW_DEVICE"] ?? m.devices.first?.name {
+                m.limitTarget = LimitTarget(server: m.server, device: d)
+            }
         default: break
         }
     }

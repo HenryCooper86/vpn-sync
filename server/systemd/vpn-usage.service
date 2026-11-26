@@ -1,0 +1,7 @@
+[Unit]
+Description=Count per-device VPN data usage and apply limits
+After=openvpn-server@server.service wg-quick@wg0.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/vpn-usage collect

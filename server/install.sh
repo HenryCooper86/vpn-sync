@@ -63,7 +63,8 @@ install -d -m 755 /usr/local/lib/vpn-sync
 install -m 644 "$here/lib/common.sh" /usr/local/lib/vpn-sync/
 install -m 755 "$here"/lib/*.exp /usr/local/lib/vpn-sync/
 install -m 755 "$here"/bin/* /usr/local/sbin/
-install -m 644 "$here"/systemd/vpn-endpoint-sync.service "$here"/systemd/vpn-endpoint-sync.timer /etc/systemd/system/
+install -m 644 "$here"/systemd/vpn-endpoint-sync.service "$here"/systemd/vpn-endpoint-sync.timer \
+	"$here"/systemd/vpn-usage.service "$here"/systemd/vpn-usage.timer /etc/systemd/system/
 
 # ---- 3. existing layout, if any
 OVPN_DIR="" WG_DIR="" DNS_CHOICE="$dns"
@@ -151,6 +152,8 @@ for d in "$OVPN_DIR" "$WG_DIR"; do
 done
 systemctl daemon-reload
 systemctl enable --now vpn-endpoint-sync.timer >/dev/null 2>&1
+# per-device usage, limits and pauses (counts every minute)
+systemctl enable --now vpn-usage.timer >/dev/null 2>&1
 # traffic totals per day/month for the Traffic view (keeps counting while the app is closed)
 systemctl enable --now vnstat >/dev/null 2>&1 || true
 /usr/local/sbin/vpn-endpoint-sync

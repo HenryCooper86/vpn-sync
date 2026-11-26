@@ -18,6 +18,13 @@
 #   vpn-sync service <server> <openvpn|wireguard|all> <start|stop|restart|status>
 #   vpn-sync reboot <server>              reboot the whole server
 #
+# Data usage and limits (counted on the server every minute; sizes like 500MB, 5GB, 1.5TB):
+#   vpn-sync usage <server> [--raw]       today's and this month's usage per device, limits, pauses
+#   vpn-sync limit <server> <device> [--daily SIZE] [--monthly SIZE] [--action alert|pause]
+#   vpn-sync limit <server> <device> --clear
+#   vpn-sync pause <server> <device>      block its traffic (it stays connected; nothing is revoked)
+#   vpn-sync resume <server> <device>     unblock it (a limit pause stays lifted until the period ends)
+#
 # Device locations (offline country lookup; no IP address leaves this Mac):
 #   vpn-sync geo update                   download the latest IP-to-country table (ip-location-db
 #                                         user-country, public domain, daily) to ~/.config/vpn-sync/geo/
@@ -650,8 +657,61 @@ service_cmd() { # service_cmd SERVER VPN ACTION | reboot SERVER
 	remote "$(sudo_prefix)/usr/local/sbin/vpn-service $vpn $action" </dev/null 2>&1
 }
 
+SIZE_RE='^[0-9]+(\.[0-9]+)?[KMGTkmgt]?([iI]?[bB])?$'
+usage_cmd() { # usage_cmd usage|limit|pause|resume SERVER [DEVICE] [options]
+	local cmd="$1" name="${2:-}" dev="${3:-}" raw=0
+	[ -n "$name" ] || die "usage: vpn-sync $cmd <server>$([ "$cmd" = usage ] || echo ' <device>')"
+	local args=""
+	if [ "$cmd" = usage ]; then
+		[ "${3:-}" = --raw ] && raw=1
+	else
+		[[ "$dev" =~ $NAME_RE ]] || die "device name: letters, digits, - and _ (max 15)"
+		args="$dev"
+		if [ "$cmd" = limit ]; then
+			shift 3
+			[ $# -gt 0 ] || die "usage: vpn-sync limit <server> <device> [--daily SIZE] [--monthly SIZE] [--action alert|pause] | --clear"
+			while [ $# -gt 0 ]; do
+				case "$1" in
+					--clear) args="$args --clear" ;;
+					--daily|--monthly) [[ "${2:-}" =~ $SIZE_RE ]] || die "$1: a size like 500MB or 5GB (0 = none)"; args="$args $1 $2"; shift ;;
+					--action) [[ "${2:-}" =~ ^(alert|pause)$ ]] || die "--action: alert or pause"; args="$args --action $2"; shift ;;
+					*) die "unknown option: $1" ;;
+				esac
+				shift
+			done
+		fi
+	fi
+	load_server "$name"; connect "" >&2 || die "can't reach $name"
+	local sudo; sudo=$(sudo_prefix)
+	remote "test -x /usr/local/sbin/vpn-usage" </dev/null || die "$name doesn't have usage tracking yet (run: vpn-sync server install $name)"
+	if [ "$cmd" != usage ]; then
+		if [ "$cmd" = limit ] && [[ "$args" != *--clear* ]]; then # days follow this Mac's time zone
+			local tz; tz=$(readlink /etc/localtime 2>/dev/null | sed -n 's#.*/zoneinfo/##p')
+			[[ "$tz" =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ ]] && args="$args --tz $tz"
+		fi
+		remote "${sudo}/usr/local/sbin/vpn-usage $cmd $args" </dev/null 2>&1
+		return
+	fi
+	if [ $raw = 1 ]; then remote "${sudo}/usr/local/sbin/vpn-usage report" </dev/null; return; fi
+	remote "${sudo}/usr/local/sbin/vpn-usage report" </dev/null | awk -F'\t' '
+		function sz(b,  u, i) { split("B KB MB GB TB", u, " "); i=1; while (b >= 1024 && i < 5) { b/=1024; i++ }
+			return (i==1) ? sprintf("%d B", b) : sprintf("%.1f %s", b, u[i]) }
+		$1=="USAGE" { n[$2]=1; td[$2]=$3+$4; md[$2]=$5+$6 }
+		$1=="LIMIT" { n[$2]=1; ld[$2]=$3; lm[$2]=$4; la[$2]=$5 }
+		$1=="PAUSED" { n[$2]=1; p[$2]=$3 }
+		END {
+			printf "%-16s %10s %10s  %-28s %s\n", "DEVICE", "TODAY", "MONTH", "LIMIT", "STATE"
+			for (d in n) {
+				lim="-"
+				if (d in ld) { lim=""; if (ld[d]>0) lim="day " sz(ld[d]); if (lm[d]>0) lim=lim (lim==""?"":", ") "month " sz(lm[d]); lim=lim " (" la[d] ")" }
+				printf "%-16s %10s %10s  %-28s %s\n", d, sz(td[d]), sz(md[d]), lim, (d in p) ? "paused (" p[d] ")" : "active"
+			}
+		}'
+}
+
 case "${1:-}" in
 	status|watch) monitor "$@"; exit ;;
+	usage|limit|pause|resume) usage_cmd "$@"; exit ;;
 	service) shift; service_cmd "$@"; exit ;;
 	aws) shift; aws_cmd "$@"; exit ;;
 	geo) shift; geo_cmd "$@"; exit ;;
