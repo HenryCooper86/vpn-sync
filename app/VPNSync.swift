@@ -529,6 +529,10 @@ struct DeviceRow: View {
                 LiveLine(name: device.name)
             }
             Spacer(minLength: 8)
+            if m.isOnline(device.name) {
+                // last 15 minutes: download above the line, upload below (same as Traffic and menu bar)
+                Sparkline(history: m.deviceHistory(device.name), name: device.name, width: 80, height: 24)
+            }
             if let r = m.rates[device.name], m.isOnline(device.name) {
                 VStack(alignment: .trailing, spacing: 1) {
                     Label(formatRate(r.down), lucide: "arrow-down", size: 10)
