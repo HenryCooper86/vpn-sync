@@ -13,15 +13,22 @@ let lightsailPolicy = """
 
 struct SettingsView: View {
     @EnvironmentObject var m: Model
+    @State private var tab = "appearance"
 
     var body: some View {
-        TabView {
+        TabView(selection: $tab) {
             AppearanceSettings()
                 .tabItem { Label { Text("Appearance") } icon: { Lucide.image("palette", size: 18) } }
+                .tag("appearance")
             GeneralSettings()
                 .tabItem { Label { Text("General") } icon: { Lucide.image("settings", size: 18) } }
+                .tag("general")
             LightsailSettings()
                 .tabItem { Label { Text("Lightsail") } icon: { Lucide.image("cloud", size: 18) } }
+                .tag("lightsail")
+        }
+        .task {   // test hook: VPNSYNC_SETTINGS_TAB=general|lightsail, for screenshots
+            if let t = ProcessInfo.processInfo.environment["VPNSYNC_SETTINGS_TAB"] { tab = t }
         }
         .frame(width: 560)
         .buttonStyle(ClearGlassButtonStyle())
@@ -73,6 +80,9 @@ struct GeneralSettings: View {
                 Toggle("Live monitoring", isOn: Binding(get: { m.monitoring }, set: { m.setMonitoring($0) }))
                 Text("Keeps one SSH connection open to each server to show who is connected.")
                     .font(.caption).foregroundStyle(.secondary)
+                if m.monitoring {
+                    ForEach(m.servers, id: \.self) { name in MonitoredServerRow(name: name) }
+                }
                 Toggle("Notifications", isOn: Binding(get: { m.notify }, set: { m.setNotify($0) }))
                     .disabled(!m.monitoring)
                 Text("A banner when a device connects or disconnects, when a server gets a new IP, or when it can't be reached.")
@@ -204,6 +214,31 @@ struct LightsailSettings: View {
             let reason = out.split(separator: "\n").first { $0.hasPrefix("lightsail:") }
                 .map { String($0.dropFirst("lightsail: ".count)) } ?? lastLines(out, 1)
             tests[s] = reason.isEmpty ? "Lookup failed" : reason
+        }
+    }
+}
+
+/// One monitored server: connection state, its total speed over the last 15 minutes, online count.
+struct MonitoredServerRow: View {
+    @EnvironmentObject var m: Model
+    @Environment(\.theme) private var t
+    let name: String
+    var body: some View {
+        let w = m.watchers[name]
+        let link = w?.link ?? .off
+        HStack(spacing: 8) {
+            Circle().fill(link == .live ? t.online : (link == .off ? Color.secondary : Color.orange)).frame(width: 7, height: 7)
+            Text(name).font(.system(.callout, design: .rounded))
+            Spacer()
+            if let w, link == .live {
+                let cutoff = (w.history.last?.time ?? Date()).addingTimeInterval(-900)
+                Sparkline(history: w.history.filter { $0.time >= cutoff }, name: name, width: 80, height: 22)
+                Text("\(w.onlineDevices.count) online").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                    .frame(width: 56, alignment: .trailing)
+            } else {
+                Text(link == .off ? "not monitored" : link == .connecting ? "connecting…" : "can't reach, retrying")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 }
