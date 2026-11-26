@@ -17,16 +17,18 @@ A macOS app and command-line tool for running your own OpenVPN + WireGuard serve
   fast, with a log of connects and disconnects, and a macOS notification whenever a
   device connects or disconnects on any server.
 - **Traffic:** a Traffic tab with today's VPN data (donut), a mirrored speed chart
-  (download above the line, upload below; 5 min / 15 min / 1 h; MB/s or Mbit/s), peak speed,
-  connections, most devices online at once, the server's own totals from `vnstat`, and
-  devices and protocols ranked by data. Star a device to pin it to the top.
+  (download above the line, upload below; 5 min / 15 min / 1 h; MB/s or Mbit/s), devices
+  online over time, the server's traffic per day for 30 days (`vnstat`), peak speed,
+  connections, most devices online at once, and devices (with speed sparklines) and protocols
+  ranked by data. Star a device to pin it to the top.
 - **Device types:** what each OpenVPN client reports (iPhone, Android, Mac, Windows, Linux,
   and the app version) is read from the server log; WireGuard devices are guessed from their
   name. Set any device's type yourself from its ⋯ menu.
 - **Device locations:** a country flag next to each device's address. The lookup is offline,
   using ip-location-db's `user-country` table (public domain, PDDL, updated daily);
   `vpn-sync geo update` fetches the latest one, checks its SHA-256 and format, and saves it to
-  `~/.config/vpn-sync/geo/`. No address is sent anywhere.
+  `~/.config/vpn-sync/geo/`. The app refreshes it automatically every month. No address is
+  sent anywhere.
 - **Control services:** start, stop or restart OpenVPN and WireGuard, or reboot the server.
 - **Menu bar:** a shield with the number of devices online across all servers; click it to
   see who is connected where, or rename (pencil) or remove (trash) a server. Closing the

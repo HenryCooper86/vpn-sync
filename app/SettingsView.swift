@@ -50,7 +50,7 @@ struct GeneralSettings: View {
     var body: some View {
         Form {
             Section("Device locations") {
-                Text("Flags show which country each device connects from. The lookup uses a local table (ip-location-db, public domain, updated daily upstream), so no address is sent anywhere.")
+                Text("Flags show which country each device connects from. The lookup uses a local table (ip-location-db, public domain, updated daily upstream), so no address is sent anywhere. VPN Sync fetches a fresh copy automatically every month.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Text(geoStatus.isEmpty ? (GeoDB.shared.available ? "Table installed" : "Table not downloaded yet") : geoStatus)

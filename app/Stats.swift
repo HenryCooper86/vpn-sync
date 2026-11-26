@@ -6,7 +6,21 @@ struct TrafficPoint: Identifiable, Equatable {
     let time: Date
     let down: Double      // bytes/s, all devices
     let up: Double
+    var online: Int = 0   // devices connected at that moment
     var id: Date { time }
+}
+
+/// Server traffic for one day (vnstat; in = received, out = sent).
+struct DayTraffic: Identifiable, Equatable {
+    let day: String       // yyyy-mm-dd
+    let rx: Int64
+    let tx: Int64
+    var id: String { day }
+    var total: Int64 { rx + tx }
+    var date: Date {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.locale = Locale(identifier: "en_US_POSIX")
+        return f.date(from: day) ?? Date()
+    }
 }
 
 struct ServerTotals: Equatable {

@@ -11,6 +11,7 @@
 #   SERVICE <openvpn|wireguard> <active|inactive|failed|missing> <active since epoch|0>
 #   TOTALS <iface> <today rx> <today tx> <month rx> <month tx>   (bytes, from vnstat; every ~30 s)
 #   DEVINFO <name> <platform> <app>   (what OpenVPN clients report, last 30 days; every ~5 min)
+#   DAY   <yyyy-mm-dd> <rx> <tx>       (server traffic per day, last 30 days, from vnstat; every ~5 min)
 #   END
 set -euo pipefail
 # shellcheck source=../lib/common.sh
@@ -73,6 +74,20 @@ totals() { # server network totals from vnstat (if installed and has data yet)
 	awk -F';' -v i="$ifc" 'NF>=11 && $1 ~ /^[0-9]+$/ {print "TOTALS\t"i"\t"$4"\t"$5"\t"$9"\t"$10}' <<< "$line"
 }
 
+daily() { # server traffic per day, last 30 days (vnstat JSON, read with python3)
+	command -v vnstat >/dev/null && command -v python3 >/dev/null || return 0
+	local ifc; ifc=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+	[[ -n "$ifc" ]] || return 0
+	vnstat -i "$ifc" --json d 30 2>/dev/null | python3 -c '
+import json, sys
+try:
+    for d in json.load(sys.stdin)["interfaces"][0]["traffic"]["day"]:
+        t = d["date"]
+        print("DAY\t%04d-%02d-%02d\t%d\t%d" % (t["year"], t["month"], t["day"], d["rx"], d["tx"]))
+except Exception:
+    pass' 2>/dev/null || true
+}
+
 devinfo() { # platform/app each OpenVPN client reported (IV_PLAT / IV_GUI_VER), newest wins
 	command -v journalctl >/dev/null || return 0
 	journalctl -u openvpn-server@server --since -30d -o cat --no-pager -q 2>/dev/null \
@@ -92,7 +107,7 @@ devinfo() { # platform/app each OpenVPN client reported (IV_PLAT / IV_GUI_VER), 
 }
 
 if [[ $interval -eq 0 ]]; then
-	snapshot; totals; devinfo; echo "END"; exit 0
+	snapshot; totals; devinfo; daily; echo "END"; exit 0
 fi
 last=$(date +%s.%N)
 n=0
@@ -102,7 +117,7 @@ while :; do
 	events_since "$last"
 	last=$now
 	(( n % 10 == 0 )) && totals
-	(( n % 100 == 0 )) && devinfo
+	(( n % 100 == 0 )) && { devinfo; daily; }
 	n=$((n + 1))
 	echo "END"
 	sleep "$interval"

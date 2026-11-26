@@ -7,9 +7,13 @@ import Charts
 enum TrafficColor {
     static func down(_ dark: Bool) -> Color { dark ? Color(hex: 0x3987E5) : Color(hex: 0x2A78D6) }
     static func up(_ dark: Bool) -> Color { dark ? Color(hex: 0xD95926) : Color(hex: 0xEB6834) }
+    /// Devices online (categorical slot 3, aqua) and server traffic per day (slot 7, violet).
+    static func online(_ dark: Bool) -> Color { dark ? Color(hex: 0x199E70) : Color(hex: 0x1BAF7A) }
+    static func daily(_ dark: Bool) -> Color { dark ? Color(hex: 0x9085E9) : Color(hex: 0x6250D6) }
 }
 
 func formatBytes(_ b: Int64) -> String {
+    if b == 0 { return "0 B" }                 // ByteCountFormatter says "Zero KB"
     let f = ByteCountFormatter(); f.countStyle = .binary
     return f.string(fromByteCount: b)
 }
@@ -18,6 +22,8 @@ extension Model {
     var history: [TrafficPoint] { live?.history ?? [] }
     var trafficStats: TrafficStats { live?.stats ?? TrafficStats() }
     var serverTotals: ServerTotals? { live?.serverTotals }
+    var serverDaily: [DayTraffic] { (live?.serverDaily.values.map { $0 } ?? []).sorted { $0.day < $1.day } }
+    func deviceHistory(_ name: String) -> [TrafficPoint] { live?.deviceHistory[name] ?? [] }
 
     private var pinnedSet: Set<String> {
         Set((UserDefaults.standard.string(forKey: "pinned") ?? "").split(separator: "\n").map(String.init))
@@ -38,6 +44,8 @@ struct TrafficView: View {
     @AppStorage("rateUnit") private var rateUnit = "bytes"
     @State private var range: Double = 900           // seconds shown in the chart
     @State private var hover: TrafficPoint?
+    @State private var hoverOnline: TrafficPoint?
+    @State private var hoverDay: DayTraffic?
 
     var body: some View {
         ScrollView {
@@ -47,6 +55,10 @@ struct TrafficView: View {
                     chart
                 }
                 figures
+                HStack(alignment: .top, spacing: 12) {
+                    onlineChart
+                    dailyChart
+                }
                 HStack(alignment: .top, spacing: 12) {
                     ranked(title: "By device", rows: m.trafficStats.devices, pinnable: true)
                     ranked(title: "By protocol", rows: m.trafficStats.protocols, pinnable: false)
@@ -223,6 +235,160 @@ struct TrafficView: View {
         .fixedSize()
     }
 
+    // MARK: devices online
+
+    private var onlineChart: some View {
+        let pts = visible
+        let now = pts.last
+        let top = max(pts.map(\.online).max() ?? 0, 1)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Devices online").font(.system(.callout, design: .rounded).weight(.semibold))
+                Spacer()
+                Text(now.map { "\($0.online) now" } ?? "–")
+                    .font(.system(.caption, design: .rounded).weight(.semibold)).monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            if pts.count < 2 {
+                Text("Collecting…").font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 110)
+            } else {
+                Chart {
+                    ForEach(pts) { p in
+                        AreaMark(x: .value("Time", p.time), y: .value("Devices", p.online))
+                            .foregroundStyle(TrafficColor.online(t.dark).opacity(0.22))
+                            .interpolationMethod(.stepEnd)
+                        LineMark(x: .value("Time", p.time), y: .value("Devices", p.online))
+                            .foregroundStyle(TrafficColor.online(t.dark))
+                            .lineStyle(StrokeStyle(lineWidth: 2))
+                            .interpolationMethod(.stepEnd)
+                    }
+                    if let h = hoverOnline {
+                        RuleMark(x: .value("Time", h.time))
+                            .foregroundStyle(Color.primary.opacity(0.35)).lineStyle(StrokeStyle(lineWidth: 1))
+                            .annotation(position: .top, spacing: 2, overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
+                                Text("\(h.time.formatted(date: .omitted, time: .shortened)): \(h.online) online")
+                                    .font(.caption).padding(6).glassPanel(8)
+                            }
+                    }
+                }
+                .chartXScale(domain: (pts.last!.time.addingTimeInterval(-range))...pts.last!.time)
+                .chartYScale(domain: 0...(Double(top) + 0.5))
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: Array(stride(from: 0, through: top, by: max(1, top / 3)))) { _ in
+                        AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
+                        AxisValueLabel().font(.caption2)
+                    }
+                }
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                        AxisValueLabel(format: .dateTime.hour().minute()).font(.caption2)
+                    }
+                }
+                .chartOverlay { proxy in hoverLayer(proxy) { date in
+                    hoverOnline = date.flatMap { d in pts.min { abs($0.time.timeIntervalSince(d)) < abs($1.time.timeIntervalSince(d)) } }
+                } }
+                .frame(height: 110)
+                .accessibilityLabel("Devices online over the last \(Int(range / 60)) minutes, \(now?.online ?? 0) now")
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity)
+        .glassPanel(20)
+    }
+
+    // MARK: server traffic per day
+
+    private var dailyChart: some View {
+        let days = m.serverDaily
+        let today = TrafficStats.today()
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Server traffic per day").font(.system(.callout, design: .rounded).weight(.semibold))
+                Spacer()
+                if let d = hoverDay ?? days.last {
+                    Text("\(d.day == today ? "Today" : d.date.formatted(.dateTime.month(.abbreviated).day())): \(formatBytes(d.total))")
+                        .font(.system(.caption, design: .rounded).weight(.semibold)).monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if days.isEmpty {
+                Text("Builds up day by day from the server's own counter.")
+                    .font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 110)
+            } else {
+                Chart {
+                    ForEach(days) { d in
+                        BarMark(x: .value("Day", d.date, unit: .day), y: .value("Traffic", Double(d.total)), width: .ratio(0.7))
+                            .foregroundStyle(TrafficColor.daily(t.dark).opacity(hoverDay == nil || hoverDay == d ? 1 : 0.45))
+                            .clipShape(UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4))
+                    }
+                }
+                .chartXScale(domain: Calendar.current.date(byAdding: .day, value: -29, to: Calendar.current.startOfDay(for: Date()))!
+                             ... Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: Date()))!)
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { v in
+                        AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
+                        AxisValueLabel { if let b = v.as(Double.self) { Text(formatBytes(Int64(b))).font(.caption2) } }
+                    }
+                }
+                .chartXAxis {
+                    AxisMarks(values: .stride(by: .day, count: 7)) { _ in
+                        AxisValueLabel(format: .dateTime.month(.abbreviated).day()).font(.caption2)
+                    }
+                }
+                .chartOverlay { proxy in hoverLayer(proxy) { date in
+                    guard let date else { hoverDay = nil; return }
+                    let key = { () -> String in
+                        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.locale = Locale(identifier: "en_US_POSIX")
+                        return f.string(from: date)
+                    }()
+                    hoverDay = days.first { $0.day == key }
+                } }
+                .frame(height: 110)
+                .help(hoverDay.map { "In \(formatBytes($0.rx)), out \(formatBytes($0.tx))" } ?? "All network traffic of the server per day, counted by vnstat")
+                .accessibilityLabel("Server traffic per day for the last 30 days")
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity)
+        .glassPanel(20)
+    }
+
+    /// Hover tracking over a chart: reports the date under the pointer (nil when it leaves).
+    private func hoverLayer(_ proxy: ChartProxy, _ onDate: @escaping (Date?) -> Void) -> some View {
+        GeometryReader { geo in
+            Rectangle().fill(.clear).contentShape(Rectangle())
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let loc):
+                        guard let plot = proxy.plotFrame else { return }
+                        onDate(proxy.value(atX: loc.x - geo[plot].origin.x))
+                    case .ended: onDate(nil)
+                    }
+                }
+        }
+    }
+
+    // MARK: sparkline
+
+    /// The device's download speed over the last 15 minutes.
+    @ViewBuilder private func sparkline(_ name: String) -> some View {
+        let h = m.deviceHistory(name)
+        if h.count >= 2 {
+            Chart(h) { p in
+                LineMark(x: .value("Time", p.time), y: .value("Speed", p.down))
+                    .foregroundStyle(TrafficColor.down(t.dark))
+                    .lineStyle(StrokeStyle(lineWidth: 1.5))
+                    .interpolationMethod(.monotone)
+            }
+            .chartXAxis(.hidden)
+            .chartYAxis(.hidden)
+            .chartYScale(domain: 0...max(h.map(\.down).max() ?? 1, 1))
+            .frame(width: 70, height: 18)
+            .help("Download speed, last 15 minutes")
+            .accessibilityLabel("Download speed of \(name), last 15 minutes")
+        }
+    }
+
     // MARK: figures
 
     private var figures: some View {
@@ -280,6 +446,7 @@ struct TrafficView: View {
                         HStack {
                             Text(row.key).font(.system(size: 13, weight: .medium, design: .rounded)).lineLimit(1)
                             Spacer()
+                            if pinnable { sparkline(row.key) }
                             Text(formatBytes(row.value.total)).font(.system(.caption, design: .rounded).weight(.medium)).monospacedDigit()
                         }
                         splitBar(row.value, top: top)

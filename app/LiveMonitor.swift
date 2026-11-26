@@ -54,6 +54,8 @@ final class ServerWatcher {
     private(set) var history: [TrafficPoint] = []          // total speed, last hour
     private(set) var stats = TrafficStats()
     private(set) var serverTotals: ServerTotals?
+    private(set) var serverDaily: [String: DayTraffic] = [:]          // last 30 days, by date
+    private(set) var deviceHistory: [String: [TrafficPoint]] = [:]    // per device, last 15 minutes
     /// What each OpenVPN client reported about itself (platform, app), from DEVINFO lines.
     private(set) var devInfo: [String: (platform: String, app: String)] = [:]
     private var prevBytes: [String: (rx: Int64, tx: Int64)] = [:]
@@ -199,6 +201,8 @@ final class ServerWatcher {
             ovpnFileTime = Int(f[safe: 1] ?? "") ?? 0
         case "DEVINFO" where f.count >= 4:
             devInfo[f[1]] = (f[2], f[3])
+        case "DAY" where f.count >= 4:
+            serverDaily[f[1]] = DayTraffic(day: f[1], rx: Int64(f[2]) ?? 0, tx: Int64(f[3]) ?? 0)
         case "TOTALS" where f.count >= 6:
             serverTotals = ServerTotals(iface: f[1], todayRx: Int64(f[2]) ?? 0, todayTx: Int64(f[3]) ?? 0,
                                         monthRx: Int64(f[4]) ?? 0, monthTx: Int64(f[5]) ?? 0)
@@ -310,12 +314,22 @@ final class ServerWatcher {
 
         let down = rates.values.reduce(0) { $0 + $1.down }
         let up = rates.values.reduce(0) { $0 + $1.up }
-        history.append(TrafficPoint(time: now, down: down, up: up))
+        let onlineNames = Set(ovpnLive.keys).union(wgLive.keys.filter { wgOnline($0) })
+        let online = onlineNames.count
+        history.append(TrafficPoint(time: now, down: down, up: up, online: online))
         let cutoff = now.addingTimeInterval(-3600)
         if let i = history.firstIndex(where: { $0.time >= cutoff }), i > 0 { history.removeFirst(i) }
+        // per-device speed, last 15 minutes (online devices; 0 when connected but idle)
+        let devCutoff = now.addingTimeInterval(-900)
+        for n in onlineNames.union(deviceHistory.keys) {
+            var h = deviceHistory[n] ?? []
+            let r = rates[n]
+            h.append(TrafficPoint(time: now, down: r?.down ?? 0, up: r?.up ?? 0))
+            if let i = h.firstIndex(where: { $0.time >= devCutoff }), i > 0 { h.removeFirst(i) }
+            deviceHistory[n] = h.allSatisfy({ $0.down == 0 && $0.up == 0 }) && !onlineNames.contains(n) ? nil : h
+        }
         stats.peakDown = max(stats.peakDown, down)
         stats.peakUp = max(stats.peakUp, up)
-        let online = Set(ovpnLive.keys).union(wgLive.keys.filter { wgOnline($0) }).count
         stats.maxOnline = max(stats.maxOnline, online)
 
         snapshotsSinceSave += 1

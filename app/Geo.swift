@@ -77,3 +77,27 @@ func withFlag(_ ip: String) -> String {
 
 /// "China" for a tooltip, or nil.
 func countryOf(_ ip: String) -> String? { GeoDB.shared.country(ip).map(countryName) }
+
+extension GeoDB {
+    /// Keeps the table fresh: fetch the latest one if it's missing or more than 30 days old.
+    /// Runs at launch and then once a day while VPN Sync is running.
+    @MainActor
+    func keepFresh(_ m: Model) {
+        Task { @MainActor in
+            while true {
+                await refreshIfStale(m)
+                try? await Task.sleep(nanoseconds: 24 * 3600 * 1_000_000_000)
+            }
+        }
+    }
+
+    @MainActor
+    private func refreshIfStale(_ m: Model) async {
+        let stamp = configDir.appendingPathComponent("geo/VERSION")
+        let checked = (try? FileManager.default.attributesOfItem(atPath: stamp.path))?[.modificationDate] as? Date
+        let stale = !available || checked.map { Date().timeIntervalSince($0) > 30 * 24 * 3600 } ?? true
+        guard stale else { return }
+        let (code, _) = await m.runCLI(["geo", "update"], quiet: true)
+        if code == 0 { load { m.objectWillChange.send() } }
+    }
+}
