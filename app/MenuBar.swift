@@ -81,7 +81,7 @@ struct MenuBarPanel: View {
             }
         }
         .padding(16)
-        .frame(width: 370)
+        .frame(width: 410)
     }
 
     private var header: some View {
@@ -194,6 +194,7 @@ struct MenuBarPanel: View {
                                     Text(d.via).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                 }
                                 Spacer(minLength: 6)
+                                Sparkline(history: w?.deviceHistory[d.name] ?? [], name: d.name, width: 56, height: 20)
                                 if let r = d.rate {
                                     VStack(alignment: .trailing, spacing: 0) {
                                         Label(formatRate(r.down), lucide: "arrow-down", size: 10)
@@ -281,7 +282,7 @@ struct MenuBarPanel: View {
 func openPanelPreviewIfRequested(_ m: Model) {
     guard ProcessInfo.processInfo.environment["VPNSYNC_PANEL_PREVIEW"] != nil else { return }
     let host = NSHostingView(rootView: Themed { MenuBarPanel(m: m).environmentObject(m) })
-    let w = NSWindow(contentRect: NSRect(x: 80, y: 120, width: 370, height: 520),
+    let w = NSWindow(contentRect: NSRect(x: 80, y: 120, width: 410, height: 520),
                      styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
     w.title = "Menu bar panel preview"
     w.titlebarAppearsTransparent = true
