@@ -1,5 +1,5 @@
-// Offline IP-to-country lookup for device locations. The table (ip-location-db,
-// geo-whois-asn-country, public domain) is downloaded by `vpn-sync geo update` to
+// Offline IP-to-country lookup for device locations. The table (ip-location-db user-country,
+// public domain, updated daily) is downloaded by `vpn-sync geo update` to
 // ~/.config/vpn-sync/geo/ipv4-num.csv; no IP address is ever sent anywhere.
 import Foundation
 

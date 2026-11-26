@@ -19,8 +19,8 @@
 #   vpn-sync reboot <server>              reboot the whole server
 #
 # Device locations (offline country lookup; no IP address leaves this Mac):
-#   vpn-sync geo update                   download the IP-to-country table (ip-location-db,
-#                                         public domain) to ~/.config/vpn-sync/geo/
+#   vpn-sync geo update                   download the latest IP-to-country table (ip-location-db
+#                                         user-country, public domain, daily) to ~/.config/vpn-sync/geo/
 #   vpn-sync geo lookup <ip>              country code for an IPv4 address
 #
 # Lightsail lookup (finds a server's new IP after a stop/start):
@@ -218,7 +218,10 @@ aws_cmd() {
 }
 
 # ---------------------------------------------------------------- device locations
-GEO_PKG="@ip-location-db/geo-whois-asn-country@2.3.2026061719"
+# ip-location-db "user-country": IPv4 → country of the person using the address; updated daily,
+# public domain (PDDL). The newest release is downloaded and checked against its SHA-256.
+GEO_BASE="https://github.com/sapics/ip-location-db/releases/download"
+GEO_FILE="user-country-ipv4-num.csv"
 GEO_DIR="$CONFIG_DIR/geo"
 
 geo_cmd() {
@@ -226,18 +229,26 @@ geo_cmd() {
 		update)
 			mkdir -p "$GEO_DIR"
 			local tmp; tmp=$(mktemp -d "$GEO_DIR/.dl.XXXXXX"); STAGES="$STAGES $tmp"
-			info "downloading the IP-to-country table ($GEO_PKG, about 8 MB)"
-			curl -fsSL -m 600 -o "$tmp/ipv4-num.csv" "https://cdn.jsdelivr.net/npm/$GEO_PKG/geo-whois-asn-country-ipv4-num.csv" \
-				|| die "download failed"
-			curl -fsSL -m 60 -o "$tmp/package.json" "https://cdn.jsdelivr.net/npm/$GEO_PKG/package.json" || true
+			info "downloading the latest IP-to-country table (ip-location-db user-country, about 8 MB)"
+			curl -fsSL -m 600 -o "$tmp/table.csv" "$GEO_BASE/latest/$GEO_FILE" || die "download failed; kept the old table"
+			curl -fsSL -m 60 -o "$tmp/table.sha256" "$GEO_BASE/checksum/$GEO_FILE.sha256" || die "couldn't get the checksum; kept the old table"
+			local want got
+			want=$(awk '{print $1; exit}' "$tmp/table.sha256")
+			got=$(shasum -a 256 "$tmp/table.csv" | awk '{print $1}')
+			[[ "$want" =~ ^[0-9a-f]{64}$ ]] && [ "$want" = "$got" ] || die "checksum mismatch; kept the old table"
 			# every line must be "start,end,CC" with numbers and a two-letter code
-			local bad; bad=$(grep -cvE '^[0-9]+,[0-9]+,[A-Z]{2}$' "$tmp/ipv4-num.csv" || true)
-			local rows; rows=$(wc -l < "$tmp/ipv4-num.csv" | tr -d ' ')
-			[ "$rows" -gt 50000 ] && [ "$bad" -eq 0 ] || die "the downloaded table doesn't look right ($rows rows, $bad bad lines); kept the old one"
-			mv "$tmp/ipv4-num.csv" "$GEO_DIR/ipv4-num.csv"
-			[ -s "$tmp/package.json" ] && mv "$tmp/package.json" "$GEO_DIR/package.json"
-			echo "$GEO_PKG" > "$GEO_DIR/VERSION"
-			info "saved $rows ranges to $GEO_DIR/ipv4-num.csv"
+			local bad rows
+			bad=$(grep -cvE '^[0-9]+,[0-9]+,[A-Z]{2}$' "$tmp/table.csv" || true)
+			rows=$(wc -l < "$tmp/table.csv" | tr -d ' ')
+			[ "$rows" -gt 50000 ] && [ "$bad" -eq 0 ] || die "the table doesn't look right ($rows rows, $bad bad lines); kept the old one"
+			if [ -s "$GEO_DIR/ipv4-num.csv" ] && cmp -s "$tmp/table.csv" "$GEO_DIR/ipv4-num.csv"; then
+				info "already up to date ($rows ranges)"
+			else
+				mv "$tmp/table.csv" "$GEO_DIR/ipv4-num.csv"
+				info "saved $rows ranges to $GEO_DIR/ipv4-num.csv"
+			fi
+			printf 'ip-location-db user-country (PDDL)\nsha256 %s\nchecked %s\n' "$got" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$GEO_DIR/VERSION"
+			rm -f "$GEO_DIR/package.json"
 			;;
 		lookup)
 			local ip="${2:-}"; [[ "$ip" =~ $IPV4_RE ]] || die "usage: vpn-sync geo lookup <ipv4>"

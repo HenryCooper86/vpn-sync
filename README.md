@@ -24,8 +24,9 @@ A macOS app and command-line tool for running your own OpenVPN + WireGuard serve
   and the app version) is read from the server log; WireGuard devices are guessed from their
   name. Set any device's type yourself from its ⋯ menu.
 - **Device locations:** a country flag next to each device's address. The lookup is offline,
-  using ip-location-db's IP-to-country table (public domain, CC0), downloaded by
-  `vpn-sync geo update` to `~/.config/vpn-sync/geo/`; no address is sent anywhere.
+  using ip-location-db's `user-country` table (public domain, PDDL, updated daily);
+  `vpn-sync geo update` fetches the latest one, checks its SHA-256 and format, and saves it to
+  `~/.config/vpn-sync/geo/`. No address is sent anywhere.
 - **Control services:** start, stop or restart OpenVPN and WireGuard, or reboot the server.
 - **Menu bar:** a shield with the number of devices online across all servers; click it to
   see who is connected where, or rename (pencil) or remove (trash) a server. Closing the
