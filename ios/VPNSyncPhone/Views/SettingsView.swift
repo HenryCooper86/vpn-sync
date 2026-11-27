@@ -64,6 +64,7 @@ struct SettingsView: View {
                 Button("Remove from This iPhone", role: .destructive) { if let r = removing { store.remove(r) }; removing = nil }
             } message: { Text("Only this iPhone forgets it, with its key. The server and its devices aren't touched.") }
         }
+        .toasts()
     }
 }
 
@@ -89,6 +90,7 @@ struct ImportSheet: View {
                 Section {
                     TextField("XXXX-XXXX-XXXX-XXXX", text: $passphrase)
                         .font(.system(.title3, design: .monospaced))
+                        .keyboardType(.asciiCapable)
                         .textInputAutocapitalization(.characters).autocorrectionDisabled()
                         .focused($focused).submitLabel(.done).onSubmit(open)
                 } header: { Text("Passphrase") } footer: {

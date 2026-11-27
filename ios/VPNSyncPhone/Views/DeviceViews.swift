@@ -155,6 +155,7 @@ struct DeviceSheet: View {
             .task { await loadFiles() }
             .onDisappear { Profiles.clear() }
         }
+        .toasts()
         .presentationDetents([.large])
     }
 
@@ -414,7 +415,7 @@ struct AddDeviceSheet: View {
     @State private var error: String?
     @FocusState private var focused: Bool
 
-    private var names: [String] { text.components(separatedBy: CharacterSet(charactersIn: ", \n\t")).filter { !$0.isEmpty } }
+    private var names: [String] { parseNames(text) }
 
     private var problems: [String] {
         let existing = Set(live.allDevices.map(\.name))
@@ -435,6 +436,8 @@ struct AddDeviceSheet: View {
                 Section {
                     TextField("Names, e.g. phone2, tv, laptop", text: $text, axis: .vertical)
                         .lineLimit(1...6)
+                        // names are ASCII only; a Chinese (Pinyin) keyboard would hold letters for conversion
+                        .keyboardType(.asciiCapable)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .focused($focused)
                 } footer: {
@@ -443,7 +446,7 @@ struct AddDeviceSheet: View {
                     else { Text("One or more names, separated by commas, spaces or new lines. Each device gets a profile for every VPN on \(server): OpenVPN, WireGuard.") }
                 }
                 Section {
-                    TextField("Prefix", text: $prefix).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    TextField("Prefix", text: $prefix).keyboardType(.asciiCapable).textInputAutocapitalization(.never).autocorrectionDisabled()
                     Stepper("From \(start)", value: $start, in: 0...999)
                     Stepper(count == 1 ? String(localized: "1 device") : String(localized: "\(count) devices"), value: $count, in: 1...50)
                     Button("Fill In \(prefix)\(start)…\(prefix)\(start + count - 1)") {

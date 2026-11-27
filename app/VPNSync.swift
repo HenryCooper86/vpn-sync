@@ -34,11 +34,6 @@ func nameProblem(_ name: String, existing: Set<String>) -> String? {
     return nil
 }
 
-/// Splits user input on commas, spaces and newlines.
-func parseNames(_ text: String) -> [String] {
-    text.components(separatedBy: CharacterSet(charactersIn: ", \n\t")).filter { !$0.isEmpty }
-}
-
 /// Reads KEY=value from a vpn-sync server config (shell syntax, simple values only).
 func configValue(_ key: String, server: String) -> String? {
     let url = configDir.appendingPathComponent("\(server).conf")

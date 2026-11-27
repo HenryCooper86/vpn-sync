@@ -46,16 +46,30 @@ struct RootView: View {
         .sheet(isPresented: Binding(get: { store.pendingImport != nil && !store.locked }, set: { if !$0 { store.pendingImport = nil } })) {
             if let d = store.pendingImport { ImportSheet(data: d) }
         }
-        .overlay(alignment: .bottom) {
-            if let t = store.toast {
-                Text(t).font(.subheadline).multilineTextAlignment(.center)
-                    .card(18, padding: 14).padding(.horizontal, 20).padding(.bottom, 12)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .onTapGesture { store.toast = nil }
-            }
-        }
-        .animation(.snappy, value: store.toast)
+        .toasts()
     }
+}
+
+/// Shows store.toast at the bottom. Sheets cover the root view, so each sheet that runs commands
+/// adds this too, or its confirmations would be hidden behind it.
+struct ToastOverlay: ViewModifier {
+    @EnvironmentObject var store: Store
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .bottom) {
+                if let t = store.toast {
+                    Text(t).font(.subheadline).multilineTextAlignment(.center)
+                        .card(18, padding: 14).padding(.horizontal, 20).padding(.bottom, 12)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .onTapGesture { store.toast = nil }
+                }
+            }
+            .animation(.snappy, value: store.toast)
+    }
+}
+
+extension View {
+    func toasts() -> some View { modifier(ToastOverlay()) }
 }
 
 struct LockView: View {

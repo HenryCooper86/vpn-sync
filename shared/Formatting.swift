@@ -43,3 +43,9 @@ func clientPlatformName(_ p: String) -> String {
     default: return p
     }
 }
+
+/// Splits typed device names on commas, spaces and newlines, including the Chinese
+/// punctuation a Chinese keyboard types (，、；and the full-width space).
+func parseNames(_ text: String) -> [String] {
+    text.components(separatedBy: CharacterSet(charactersIn: ",;，、；\u{3000} \n\t")).filter { !$0.isEmpty }
+}
