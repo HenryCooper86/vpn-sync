@@ -1,9 +1,11 @@
 #!/bin/bash
-# vpn-sync — manage OpenVPN + WireGuard servers (Nyr road-warrior installs) from this Mac.
+# vpn-sync — manage OpenVPN + WireGuard servers (Nyr road-warrior installs), optionally with
+# IPsec/IKEv2 (hwdsl2's setup-ipsec-vpn), from this Mac.
 #
 # Sync and devices:
 #   vpn-sync [server...]                  find each server, fix its IP in the profiles,
 #                                         copy profiles to ~/Desktop/<server>-<ip>/
+#                                         (OpenVPN/, WireGuard/, and IKEv2/ where installed)
 #   vpn-sync --check [server...]          report what would change; touch nothing
 #   vpn-sync --ip A.B.C.D <server>        use this address for the server
 #   vpn-sync --add NAMES <server>         create devices (comma separated), then sync
@@ -15,7 +17,7 @@
 #   vpn-sync watch <server> [--interval N]  stream a snapshot every N seconds (default 3)
 #
 # Services:
-#   vpn-sync service <server> <openvpn|wireguard|all> <start|stop|restart|status>
+#   vpn-sync service <server> <openvpn|wireguard|ipsec|all> <start|stop|restart|status>
 #   vpn-sync reboot <server>              reboot the whole server
 #
 # Data usage and limits (counted on the server every minute; sizes like 500MB, 5GB, 1.5TB):
@@ -53,9 +55,10 @@
 #   vpn-sync server probe NAME            what's installed (KEY=VALUE lines)
 #   vpn-sync server install NAME [--openvpn-proto tcp|udp] [--openvpn-port N]
 #                           [--wireguard-port N] [--dns 1-7] [--client NAME]
-#                           [--no-openvpn] [--no-wireguard]
+#                           [--no-openvpn] [--no-wireguard] [--ipsec]
 #       installs OpenVPN/WireGuard if missing (keeps existing installs), plus the
-#       server tools; then syncs.
+#       server tools; then syncs. --ipsec also installs IPsec/IKEv2 (IKEv2 only; UDP 500
+#       and 4500) and gives every device an IKEv2 profile; once installed it's kept.
 #
 # Servers are found via --ip, the AWS CLI (if set up), the last known IP, the
 # configured host, a jump server, then VPN tunnel addresses. Every server's SSH host
@@ -379,19 +382,22 @@ sync_server() {
 	local stage; stage=$(mktemp -d "${TMPDIR:-/tmp}/vpn-sync.XXXXXX"); STAGES="$STAGES $stage"
 	remote "${sudo}/usr/local/sbin/vpn-export-profiles" </dev/null | tar xzf - -C "$stage" \
 		|| { info "  ! could not download profiles"; return 1; }
-	mkdir -p "$stage/OpenVPN" "$stage/WireGuard"
-	local n_ovpn n_wg
+	mkdir -p "$stage/OpenVPN" "$stage/WireGuard" "$stage/IKEv2"
+	local n_ovpn n_wg n_ike
 	n_ovpn=$(ls "$stage/OpenVPN" | grep -c '\.ovpn$' || true)
 	n_wg=$(ls "$stage/WireGuard" | grep -c '\.conf$' || true)
+	n_ike=$(ls "$stage/IKEv2" | grep -c '\.mobileconfig$' || true)
 
 	if [ -n "$old_dir" ] && [ ! -e "$dest" ]; then
 		mv "$old_dir" "$dest"; info "  renamed ${old_dir##*/} -> ${dest##*/}"
 	fi
 	mkdir -p "$dest"; chmod 700 "$dest"
-	rm -rf "$dest/OpenVPN" "$dest/WireGuard"
+	rm -rf "$dest/OpenVPN" "$dest/WireGuard" "$dest/IKEv2"
 	mv "$stage/OpenVPN" "$stage/WireGuard" "$dest/"
+	if [ "$n_ike" -gt 0 ]; then mv "$stage/IKEv2" "$dest/"; fi
 	chmod 600 "$dest"/OpenVPN/* "$dest"/WireGuard/* 2>/dev/null || true
-	info "  profiles: $n_ovpn OpenVPN, $n_wg WireGuard -> $dest"
+	chmod 600 "$dest"/IKEv2/* 2>/dev/null || true
+	info "  profiles: $n_ovpn OpenVPN, $n_wg WireGuard$([ "$n_ike" -gt 0 ] && echo ", $n_ike IKEv2") -> $dest"
 
 	if [ $opt_apps -eq 1 ] && [ -n "$old_ip" ] && [ "$old_ip" != "$ip" ] && [ -d "$OVPN_CONNECT_PROFILES" ]; then
 		local f bdir="$CONFIG_DIR/backups/$(date +%Y%m%d-%H%M%S)" old_re="${old_ip//./\\.}"
@@ -406,6 +412,7 @@ sync_server() {
 	fi
 	if [ -n "$old_ip" ] && [ "$old_ip" != "$ip" ]; then
 		info "  IP changed $old_ip -> $ip: re-import the WireGuard profiles (or edit Endpoint) on each device."
+		[ "$n_ike" -gt 0 ] && info "  IKEv2 profiles were made again for $ip: install them again on each IKEv2 device."
 	fi
 	echo "$ip" > "$S_STATE"
 	[ "$opt_failed" -eq 0 ]
@@ -576,6 +583,8 @@ else echo "OPENVPN=none"; fi
 if [ -f /etc/wireguard/wg0.conf ]; then
   echo "WIREGUARD=udp $(awk -F" = " "/^ListenPort/{print \$2}" /etc/wireguard/wg0.conf)"
 else echo "WIREGUARD=none"; fi
+if [ -f /etc/ipsec.d/ikev2.conf ]; then echo "IPSEC=ikev2 $(ipsec --version 2>/dev/null | awk "{print \$2; exit}")"
+else echo "IPSEC=none"; fi
 if [ -x /usr/local/sbin/vpn-export-profiles ] && [ -f /usr/local/lib/vpn-sync/common.sh ] && [ -f /etc/vpn-sync.conf ]; then echo "TOOLS=installed"; else echo "TOOLS=none"; fi
 command -v apt-get >/dev/null && echo "PKG=apt" || { command -v dnf >/dev/null && echo "PKG=dnf" || echo "PKG=unsupported"; }
 echo "PUBLIC_IP=$(curl -4 -fsS -m 6 https://checkip.amazonaws.com 2>/dev/null | tr -d "[:space:]")"
@@ -600,7 +609,7 @@ server_install() {
 			--openvpn-port|--wireguard-port) [[ "${2:-}" =~ ^[0-9]{1,5}$ ]] || die "$1: invalid port"; args="$args $1 $2"; shift ;;
 			--dns) [[ "${2:-}" =~ ^[1-7]$ ]] || die "--dns: 1-7"; args="$args $1 $2"; shift ;;
 			--client) [[ "${2:-}" =~ $NAME_RE ]] || die "--client: 1-15 letters, digits, _ or -"; args="$args $1 $2"; shift ;;
-			--no-openvpn|--no-wireguard) args="$args $1" ;;
+			--no-openvpn|--no-wireguard|--ipsec) args="$args $1" ;;
 			*) die "unknown option: $1" ;;
 		esac
 		shift
@@ -614,7 +623,7 @@ server_install() {
 	info "  uploading tools"
 	COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata -czf - -C "$BUNDLE_DIR" . | remote "rm -rf /tmp/vpn-sync-bundle && mkdir -m 700 /tmp/vpn-sync-bundle && tar xzf - -C /tmp/vpn-sync-bundle" \
 		|| die "upload failed"
-	info "  running installer (a fresh OpenVPN install takes a few minutes)"
+	info "  running installer (a fresh OpenVPN or IPsec install takes a few minutes)"
 	local rc=0
 	remote "${sudo}bash /tmp/vpn-sync-bundle/install.sh$args; rc=\$?; rm -rf /tmp/vpn-sync-bundle; exit \$rc" </dev/null 2>&1 | prefix_stream || rc=1
 	[ $rc -eq 0 ] || die "install failed on $name"
@@ -656,8 +665,8 @@ service_cmd() { # service_cmd SERVER VPN ACTION | reboot SERVER
 		return 0
 	fi
 	local name="${1:-}" vpn="${2:-}" action="${3:-}"
-	[ -n "$name" ] || die "usage: vpn-sync service <server> <openvpn|wireguard|all> <start|stop|restart|status>"
-	[[ "$vpn" =~ ^(openvpn|wireguard|all)$ ]] || die "VPN must be openvpn, wireguard or all"
+	[ -n "$name" ] || die "usage: vpn-sync service <server> <openvpn|wireguard|ipsec|all> <start|stop|restart|status>"
+	[[ "$vpn" =~ ^(openvpn|wireguard|ipsec|all)$ ]] || die "VPN must be openvpn, wireguard, ipsec or all"
 	[[ "$action" =~ ^(start|stop|restart|status)$ ]] || die "action must be start, stop, restart or status"
 	load_server "$name"; connect "" >&2 || die "can't reach $name"
 	remote "$(sudo_prefix)/usr/local/sbin/vpn-service $vpn $action" </dev/null 2>&1

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# vpn-remove-client — remove one or more devices: revoke the OpenVPN certificate and
-# remove the WireGuard peer, using the Nyr installers' own menus.
+# vpn-remove-client — remove one or more devices: revoke the OpenVPN certificate, remove the
+# WireGuard peer (the Nyr installers' own menus), and revoke and delete the IKEv2 certificate
+# (hwdsl2's helper; the revocation stays in the CRL, so the old profile can't connect).
 # Profile files are moved to $BACKUP_DIR/removed-<timestamp>/.
 # Usage: vpn-remove-client <name> [name...]      Prints "REMOVED=<name>" per device.
 # Exit codes: 0 ok, 64 bad name, 66 a name doesn't exist, 70 installer failed.
@@ -13,14 +14,15 @@ require_root
 
 has_ovpn()  { [[ -f "$OVPN_PKI/index.txt" ]] && tail -n +2 "$OVPN_PKI/index.txt" | grep '^V' | grep -q "/CN=$1\$"; }
 has_wg()    { [[ -f "$WG_CONF" ]] && grep -qx "# BEGIN_PEER $1" "$WG_CONF"; }
-has_files() { [[ -e "$OVPN_DIR/$1.ovpn" || -e "$WG_DIR/$1.conf" ]]; }
+has_ike()   { have_ikev2 && ikev2_has_client "$1"; }
+has_files() { [[ -e "$OVPN_DIR/$1.ovpn" || -e "$WG_DIR/$1.conf" || -e "$IKEV2_DIR/$1.mobileconfig" ]]; }
 
 bad=0
 for name in "$@"; do
 	if [[ ! "$name" =~ $NAME_RE ]] && ! has_ovpn "$name" && ! has_wg "$name"; then
 		echo "invalid name '$name'" >&2; bad=64; continue
 	fi
-	if ! has_ovpn "$name" && ! has_wg "$name" && ! has_files "$name"; then
+	if ! has_ovpn "$name" && ! has_wg "$name" && ! has_ike "$name" && ! has_files "$name"; then
 		echo "no device named '$name'" >&2; [[ $bad -eq 0 ]] && bad=66
 	fi
 done
@@ -44,7 +46,15 @@ for name in "$@"; do
 		fi
 		echo "WireGuard: removed $name"
 	fi
-	for f in "$OVPN_DIR/$name.ovpn" "$WG_DIR/$name.conf" "$WG_DIR/$name-wireguard-qr.png"; do
+	if has_ike "$name"; then
+		if ! ikev2_helper --revokeclient "$name" -y >>"$log" 2>&1 \
+			|| ! ikev2_helper --deleteclient "$name" -y >>"$log" 2>&1 || has_ike "$name"; then
+			echo "IKEv2: revoking '$name' failed (log: $log)" >&2; exit 70
+		fi
+		echo "IKEv2: revoked $name"
+	fi
+	for f in "$OVPN_DIR/$name.ovpn" "$WG_DIR/$name.conf" "$WG_DIR/$name-wireguard-qr.png" \
+		"$IKEV2_DIR/$name.mobileconfig" "$IKEV2_DIR/$name.sswan" "$IKEV2_DIR/$name.p12"; do
 		[[ -e "$f" ]] && mv "$f" "$trash/"
 	done
 	# drop its usage limit and any pause

@@ -1,13 +1,21 @@
 # VPN Sync
 
 A macOS app and command-line tool for running your own OpenVPN + WireGuard servers
-(using [Nyr's road-warrior installers](https://github.com/Nyr)) on Lightsail or any VPS.
+(using [Nyr's road-warrior installers](https://github.com/Nyr)) on Lightsail or any VPS,
+optionally with IPsec/IKEv2 (using [hwdsl2's setup-ipsec-vpn](https://github.com/hwdsl2/setup-ipsec-vpn)).
 
 - **Set up servers:** add a server with its IP and SSH key (`.pem`), verify its host key,
   and install OpenVPN and/or WireGuard with your choice of protocol, ports and DNS.
   Servers that already run a Nyr install are adopted as they are.
-- **Manage devices:** add, remove, batch add (`m1`…`m15`) and batch remove devices on both
-  VPNs at once. WireGuard profiles come with QR codes for phones and TVs.
+- **Manage devices:** add, remove, batch add (`m1`…`m15`) and batch remove devices on every
+  VPN at once. WireGuard profiles come with QR codes for phones and TVs.
+- **IPsec/IKEv2 (optional):** the VPN built into macOS, iOS, Windows and Android, no app
+  needed. Installed in IKEv2-only mode (the older IPsec/L2TP and Cisco IPsec modes, which use
+  a shared key and password, are off). Every device gets `IKEv2/<name>.mobileconfig` (macOS,
+  iOS), `.sswan` (Android, strongSwan) and `.p12` (Windows); removing a device revokes its
+  certificate. IKEv2 devices show up live, are counted for usage limits and can be paused like
+  the others. If the server's IP changes, it gets a new server certificate and the IKEv2
+  profiles are made again: install them again on each device. Needs UDP 500 and 4500 open.
 - **Survive IP changes:** each server rewrites its own profiles when its public IP
   changes (at boot and every 15 minutes). The Mac pulls fresh profiles to
   `~/Desktop/<server>-<ip>/` and fixes OpenVPN Connect's saved profile. With a read-only
@@ -29,7 +37,7 @@ A macOS app and command-line tool for running your own OpenVPN + WireGuard serve
   `vpn-sync geo update` fetches the latest one, checks its SHA-256 and format, and saves it to
   `~/.config/vpn-sync/geo/`. The app refreshes it automatically every month. No address is
   sent anywhere.
-- **Control services:** start, stop or restart OpenVPN and WireGuard, or reboot the server.
+- **Control services:** start, stop or restart OpenVPN, WireGuard and IPsec, or reboot the server.
 - **Usage limits:** each server counts every device's data per day (every minute, so it keeps
   counting while the app is closed). Set a daily and/or monthly limit per device that either
   notifies you (at 80% and 100%; the warning level can be changed) or also pauses the device. **Pause Internet** blocks a
@@ -80,7 +88,10 @@ with a tunnel narrowing to a lit keyhole, is drawn by `app/make-icon.swift`.
    another server" with its private IP. Check the fingerprint, then **Trust and Add**.
 2. **Set Up**: VPN Sync shows what's installed. For a fresh server pick OpenVPN TCP/UDP and
    port, WireGuard port, DNS and the first device name, then **Install** (a few minutes).
-   Open the same ports in the provider's firewall (Lightsail: instance → Networking).
+   Tick **Also install IPsec/IKEv2** to add IKEv2 (also on servers that already have
+   OpenVPN/WireGuard; existing devices get IKEv2 profiles).
+   Open the same ports in the provider's firewall (Lightsail: instance → Networking); IKEv2
+   needs UDP 500 and 4500.
 3. Use **Add Device / Batch Add… / Batch Remove…** and the row menu to manage devices,
    **QR** to show a WireGuard code, **Sync Now** after an IP change, and **Live** for
    monitoring (the bell turns notifications on or off). Use the **OpenVPN / WireGuard**
@@ -98,7 +109,7 @@ vpn-sync --add a,b,c <server>              create devices
 vpn-sync --remove a,b <server>             revoke/remove devices
 vpn-sync status <server>                   who is connected now
 vpn-sync watch <server> [--interval N]     stream connection snapshots
-vpn-sync service <server> <openvpn|wireguard|all> <start|stop|restart|status>
+vpn-sync service <server> <openvpn|wireguard|ipsec|all> <start|stop|restart|status>
 vpn-sync reboot <server>
 vpn-sync usage [server...]                 data per device today and this month, limit, % used
 vpn-sync limits [server...]                only devices with a limit or a pause
@@ -107,6 +118,7 @@ vpn-sync limit <server> <device> --daily 2GB --monthly 50GB --action alert|pause
 vpn-sync limit <server> <device> --clear
 vpn-sync pause | resume <server> <device>  block or unblock a device's traffic
 vpn-sync server list | add | edit | rename | remove | hostkey | probe | install
+vpn-sync server install <server> --ipsec   also install IPsec/IKEv2 (kept once installed)
 ```
 
 Run `vpn-sync --help` for all options.
@@ -117,11 +129,11 @@ Run `vpn-sync --help` for all options.
 |---|---|
 | `vpn-sync` | Mac CLI. Finds each server (`--ip`, AWS CLI, last IP, configured host, jump server, VPN tunnel addresses), always over SSH with a pinned host key. |
 | `app/` | SwiftUI front end that runs `vpn-sync`. Logs every command to `~/.config/vpn-sync/history.log`. |
-| `server/install.sh` | Uploaded and run by `vpn-sync server install`. Installs packages and tools, installs the VPNs if missing, writes `/etc/vpn-sync.conf`. |
-| `server/bin/vpn-endpoint-sync` | Rewrites profiles and templates for the current public IP and refreshes QR codes (systemd timer). |
-| `server/bin/vpn-add-client`, `vpn-remove-client` | Add/remove devices on both VPNs by driving the Nyr menus with `expect`. All names are validated first. Removed files are kept in `/root/vpn-sync-backups/`. |
+| `server/install.sh` | Uploaded and run by `vpn-sync server install`. Installs packages and tools, installs the VPNs if missing, writes `/etc/vpn-sync.conf`. With `--ipsec` it runs hwdsl2's `vpnsetup.sh` (Libreswan, IKEv2), switches to IKEv2-only mode (`ikev1-policy=drop`, `xl2tpd` off) and creates an IKEv2 client per device; client files live in `/root/vpn-setup/ikev2/`. |
+| `server/bin/vpn-endpoint-sync` | Rewrites profiles and templates for the current public IP and refreshes QR codes (systemd timer). For IKEv2 it issues a server certificate for the new IP, updates `ikev2.conf`, restarts IPsec and exports every client again. |
+| `server/bin/vpn-add-client`, `vpn-remove-client` | Add/remove devices on every VPN by driving the Nyr menus with `expect` and hwdsl2's `ikev2.sh` (`--addclient`; `--revokeclient` then `--deleteclient`). All names are validated first. Removed files are kept in `/root/vpn-sync-backups/`. |
 | `server/bin/vpn-export-profiles` | Streams all client profiles as a tarball. |
-| `server/bin/vpn-status` | Connected devices (OpenVPN status file and log, `wg show` handshakes) and service state. |
+| `server/bin/vpn-status` | Connected devices (OpenVPN status file and log, `wg show` handshakes, `ipsec trafficstatus`) and service state. |
 | `server/bin/vpn-usage` | Per-device data per day in `/var/lib/vpn-sync/usage/` (systemd timer, every minute), limits, and pausing via a `VPNSYNC-BLOCK` chain first in `FORWARD` (IPv4 and IPv6). On the server, `sudo vpn-usage show` prints a table, and `sudo vpn-usage log` lists pauses, resumes and limit changes (also in `journalctl -t vpn-usage`). |
 | `server/bin/vpn-service` | Start/stop/restart the VPN services, or reboot. Stopped services start again at boot. |
 

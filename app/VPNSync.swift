@@ -61,12 +61,15 @@ final class OutputBuffer: @unchecked Sendable {
 
 // MARK: - Model
 
-/// One device = an OpenVPN profile and/or a WireGuard profile with the same name.
+/// One device = an OpenVPN profile, a WireGuard profile and/or IKEv2 profiles with the same name.
 struct Device: Identifiable, Hashable {
     let name: String
     var ovpn: URL?
     var wg: URL?
     var qr: URL?
+    /// IKEv2: .mobileconfig (macOS, iOS); `ikeFiles` also holds .sswan (Android) and .p12 (Windows)
+    var ike: URL?
+    var ikeFiles: [URL] = []
     var id: String { name }
 }
 
@@ -242,6 +245,13 @@ final class Model: ObservableObject {
             let qr = wgDir.appendingPathComponent("\(n)-wireguard-qr.png")
             byName[n, default: Device(name: n)].wg = f
             if fm.fileExists(atPath: qr.path) { byName[n]?.qr = qr }
+        }
+        let ikeDir = folder.appendingPathComponent("IKEv2")
+        for f in ((try? fm.contentsOfDirectory(at: ikeDir, includingPropertiesForKeys: nil)) ?? [])
+            where ["mobileconfig", "sswan", "p12"].contains(f.pathExtension) {
+            let n = f.deletingPathExtension().lastPathComponent
+            if f.pathExtension == "mobileconfig" { byName[n, default: Device(name: n)].ike = f }
+            byName[n, default: Device(name: n)].ikeFiles.append(f)
         }
         return byName.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
@@ -450,6 +460,12 @@ final class Model: ObservableObject {
     // MARK: files
 
     func importOnThisMac(_ url: URL) {
+        // IKEv2: macOS installs .mobileconfig profiles itself (System Settings → Profiles asks to install)
+        if url.pathExtension == "mobileconfig" {
+            NSWorkspace.shared.open(url)
+            notices = ["Open System Settings → General → Device Management (Profiles) and install “\(url.deletingPathExtension().lastPathComponent)”. Then connect from System Settings → VPN."]
+            return
+        }
         let candidates: [String] = url.pathExtension == "ovpn"
             ? ["/Applications/OpenVPN Connect/OpenVPN Connect.app", "/Applications/OpenVPN Connect.app"]
             : ["/Applications/WireGuard.app"]
@@ -501,6 +517,7 @@ struct Badge: View {
 }
 
 let openVPNColor = Color(hex: 0xF5B14C)
+let ikev2Color = Color(hex: 0xA78BFA)
 
 struct DeviceRow: View {
     @EnvironmentObject var m: Model
@@ -514,6 +531,22 @@ struct DeviceRow: View {
         if m.deviceKindIsManual(device.name) { return k.label }
         if k == .unknown { return "Device type unknown" }
         return m.live?.devInfo[device.name] == nil ? "\(k.label) (guessed from the name)" : k.label
+    }
+
+    /// Most devices have a profile for every VPN on the server; only the exceptions get a badge:
+    /// "OpenVPN only", "no IKEv2", "no profile file".
+    private var profileBadge: (text: String, color: Color)? {
+        let has = [("OpenVPN", device.ovpn != nil, openVPNColor), ("WireGuard", device.wg != nil, Color.cyan),
+                   ("IKEv2", device.ike != nil, ikev2Color)]
+        // the VPNs this server offers: any device has a profile for it
+        let offered = has.filter { kind in m.devices.contains { d in
+            kind.0 == "OpenVPN" ? d.ovpn != nil : kind.0 == "WireGuard" ? d.wg != nil : d.ike != nil } }
+        let present = offered.filter { $0.1 }
+        if present.isEmpty { return ("no profile file", .secondary) }
+        if present.count == offered.count { return nil }
+        if present.count == 1 { return ("\(present[0].0) only", present[0].2) }
+        let missing = offered.filter { !$0.1 }.map(\.0).joined(separator: ", ")
+        return ("no \(missing)", .secondary)
     }
 
     /// What Automatic would pick, ignoring the user's choice.
@@ -537,9 +570,7 @@ struct DeviceRow: View {
                 HStack(spacing: 6) {
                     Text(device.name).font(.system(size: 14, weight: .semibold, design: .rounded))
                     // Most devices have both; only the exceptions are worth a badge.
-                    if device.ovpn != nil && device.wg == nil { Badge(text: "OpenVPN only", color: openVPNColor) }
-                    if device.wg != nil && device.ovpn == nil { Badge(text: "WireGuard only", color: .cyan) }
-                    if device.ovpn == nil && device.wg == nil { Badge(text: "no profile file", color: .secondary) }
+                    if let b = profileBadge { Badge(text: b.text, color: b.color) }
                     if m.isPinned(device.name) { LucideIcon("star", size: 11).foregroundStyle(.yellow).help("Pinned") }
                     if let p = m.pauseInfo(device.name) { PausedBadge(info: p) }
                 }
@@ -581,6 +612,7 @@ struct DeviceRow: View {
                 Menu {
                     if let u = device.ovpn { Button("Import OpenVPN Profile on This Mac") { m.importOnThisMac(u) } }
                     if let u = device.wg { Button("Import WireGuard Profile on This Mac") { m.importOnThisMac(u) } }
+                    if let u = device.ike { Button("Install IKEv2 Profile on This Mac") { m.importOnThisMac(u) } }
                     Divider()
                     Menu("Device Type") {
                         Toggle("Automatic (\(autoKind.label))", isOn: Binding(
@@ -598,7 +630,7 @@ struct DeviceRow: View {
                     LimitMenuItems(m: m, server: m.server, name: device.name)
                     Divider()
                     Button("Show in Finder") {
-                        NSWorkspace.shared.activateFileViewerSelecting([device.ovpn, device.wg].compactMap { $0 })
+                        NSWorkspace.shared.activateFileViewerSelecting([device.ovpn, device.wg].compactMap { $0 } + device.ikeFiles)
                     }
                     Divider()
                     Button("Remove Device…", role: .destructive) { m.confirmRemoval = [device.name] }

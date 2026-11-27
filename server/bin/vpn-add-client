@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # vpn-add-client — create one or more devices on every installed VPN (OpenVPN and/or
-# WireGuard, via the Nyr installers) plus a WireGuard QR code each.
+# WireGuard via the Nyr installers, IKEv2 via hwdsl2's helper) plus a WireGuard QR code each.
 # Usage: vpn-add-client <name> [name...]     name: 1-15 of A-Z a-z 0-9 _ -
 # All names are checked before anything is created. Prints "ADDED=<name>" per device.
 # Exit codes: 0 ok, 64 bad name, 65 name already used, 70 installer failed, 71 no VPN.
@@ -9,7 +9,7 @@ set -euo pipefail
 . "${VPN_SYNC_LIB:-/usr/local/lib/vpn-sync}/common.sh"
 require_root
 [[ $# -gt 0 ]] || { echo "usage: vpn-add-client <name> [name...]" >&2; exit 64; }
-have_openvpn || have_wireguard || { echo "neither OpenVPN nor WireGuard is installed" >&2; exit 71; }
+have_openvpn || have_wireguard || have_ikev2 || { echo "no VPN is installed" >&2; exit 71; }
 
 seen=" " bad=0
 for name in "$@"; do
@@ -21,7 +21,8 @@ for name in "$@"; do
 	taken=()
 	[[ -e "$OVPN_PKI/issued/$name.crt" ]] && taken+=("OpenVPN")
 	grep -qx "# BEGIN_PEER $name" "$WG_CONF" 2>/dev/null && taken+=("WireGuard")
-	[[ -e "$OVPN_DIR/$name.ovpn" || -e "$WG_DIR/$name.conf" ]] && taken+=("profile files")
+	have_ikev2 && ikev2_has_client "$name" && taken+=("IKEv2")
+	[[ -e "$OVPN_DIR/$name.ovpn" || -e "$WG_DIR/$name.conf" || -e "$IKEV2_DIR/$name.mobileconfig" ]] && taken+=("profile files")
 	if [[ ${#taken[@]} -gt 0 ]]; then
 		echo "name '$name' is already used (${taken[*]})" >&2; [[ $bad -eq 0 ]] && bad=65
 	fi
@@ -53,6 +54,14 @@ for name in "$@"; do
 		fi
 		qrencode -t PNG -s 8 -o "$WG_DIR/$name-wireguard-qr.png" < "$WG_DIR/$name.conf"
 		chmod 600 "$WG_DIR/$name.conf" "$WG_DIR/$name-wireguard-qr.png"; what+=("WireGuard")
+	fi
+	if have_ikev2; then
+		if ! ikev2_helper --addclient "$name" >>"$log" 2>&1 || ! ikev2_collect "$name"; then
+			echo "IKEv2: creating '$name' failed (log: $log)${what:+; its ${what[*]} profile(s) were kept}" >&2
+			[[ ${#created[@]} -gt 0 ]] && echo "created before the failure: ${created[*]}" >&2
+			exit 70
+		fi
+		what+=("IKEv2")
 	fi
 	chmod 600 "$log"
 	created+=("$name")

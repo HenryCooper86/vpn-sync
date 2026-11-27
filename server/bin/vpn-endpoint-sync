@@ -5,7 +5,9 @@
 # When the public IP differs from the configs, rewrites:
 #   client-common.txt (template for new OpenVPN clients), "# ENDPOINT" in wg0.conf
 #   (template for new WireGuard clients), and every client profile in OVPN_DIR/WG_DIR.
-# Server-side services are not touched: they listen on all addresses.
+# OpenVPN and WireGuard aren't touched: they listen on all addresses. IKEv2 identifies the
+# server by its address, so it gets a server certificate for the new IP, IPsec restarts (IKEv2
+# devices reconnect), and every IKEv2 profile is exported again.
 #
 # Usage: vpn-endpoint-sync [--dry-run] [--ip A.B.C.D] [--print-ip]
 # Last line of output is always "ENDPOINT=<ip>" on success.
@@ -63,6 +65,11 @@ done
 if [[ -f "$WG_CONF" ]] && grep -q '^# ENDPOINT ' "$WG_CONF" && ! grep -qx "# ENDPOINT $new_ip" "$WG_CONF"; then
 	changed+=("$WG_CONF")
 fi
+ike_changed=0
+if have_ikev2; then
+	ike_addr=$(awk -F= '/^[[:space:]]*leftcert=/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$IKEV2_CONF")
+	[[ -n "$ike_addr" && "$ike_addr" != "$new_ip" ]] && ike_changed=1
+fi
 
 # QR codes that are missing or older than their profile
 stale_qr=()
@@ -73,14 +80,15 @@ if command -v qrencode >/dev/null; then
 	done
 fi
 
-if [[ ${#changed[@]} -eq 0 ]]; then
+if [[ ${#changed[@]} -eq 0 && $ike_changed -eq 0 ]]; then
 	echo "up to date: all configs use $new_ip"
 else
-	echo "public IP is $new_ip; ${#changed[@]} file(s) need updating:"
-	printf '  %s\n' "${changed[@]}"
+	echo "public IP is $new_ip; $(( ${#changed[@]} + ike_changed )) file(s) need updating:"
+	[[ ${#changed[@]} -gt 0 ]] && printf '  %s\n' "${changed[@]}"
+	[[ $ike_changed -eq 1 ]] && echo "  $IKEV2_CONF (IKEv2 server address $ike_addr) and the IKEv2 profiles"
 fi
 if [[ $dry_run -eq 1 ]]; then
-	[[ ${#changed[@]} -gt 0 ]] && echo "(dry run, nothing written)"
+	[[ ${#changed[@]} -gt 0 || $ike_changed -eq 1 ]] && echo "(dry run, nothing written)"
 	echo "ENDPOINT=$new_ip"; exit 0
 fi
 
@@ -105,5 +113,29 @@ for f in ${stale_qr[@]+"${stale_qr[@]}"}; do
 	qrencode -t PNG -s 8 -o "$qr" < "$f" && chmod 600 "$qr"
 done
 [[ ${#stale_qr[@]} -gt 0 ]] && echo "refreshed ${#stale_qr[@]} WireGuard QR code(s)"
+
+# IKEv2: what hwdsl2's ikev2changeaddr.sh does (server certificate for the new IP, ikev2.conf),
+# then export every client again so the profiles point at the new address
+if [[ $ike_changed -eq 1 ]]; then
+	if ! certutil -L -d "$IPSEC_DB" -n "$new_ip" >/dev/null 2>&1; then
+		certutil -z <(head -c 1024 /dev/urandom) -S -c "IKEv2 VPN CA" -n "$new_ip" -s "O=IKEv2 VPN,CN=$new_ip" \
+			-k rsa -g 3072 -v 120 -d "$IPSEC_DB" -t ",," --keyUsage digitalSignature,keyEncipherment \
+			--extKeyUsage serverAuth --extSAN "ip:$new_ip,dns:$new_ip" >/dev/null 2>&1 \
+			|| { echo "IKEv2: could not create a server certificate for $new_ip" >&2; exit 70; }
+	fi
+	ensure_backup_dir
+	cp -p "$IKEV2_CONF" "$BACKUP_DIR/ikev2.conf.$(date +%Y%m%d-%H%M%S)"
+	sed -i -e '/^[[:space:]]\+leftcert=/d' -e '/^[[:space:]]\+leftid=/d' "$IKEV2_CONF"
+	sed -i "/conn ikev2-cp/a \  leftid=$new_ip" "$IKEV2_CONF"
+	sed -i "/conn ikev2-cp/a \  leftcert=$new_ip" "$IKEV2_CONF"
+	mkdir -p /run/pluto; systemctl restart ipsec
+	n=0
+	while IFS= read -r f; do
+		c=$(basename "$f" .mobileconfig)
+		if ikev2_helper --exportclient "$c" >/dev/null 2>&1 && ikev2_collect "$c"; then n=$((n + 1))
+		else echo "IKEv2: could not export $c again" >&2; fi
+	done < <(ikev2_profiles)
+	echo "IKEv2 now uses $new_ip; exported $n profile(s) again (install them again on each device)"
+fi
 mkdir -p /var/lib/vpn-sync && echo "$new_ip" > /var/lib/vpn-sync/endpoint
 echo "ENDPOINT=$new_ip"

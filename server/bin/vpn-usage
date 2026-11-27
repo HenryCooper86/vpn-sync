@@ -53,6 +53,7 @@ known_device() { # a device that exists on this server (either VPN)
 	local n="$1"
 	[[ -f "$OVPN_PKI/index.txt" ]] && grep -qE "^V.*/CN=$n\$" "$OVPN_PKI/index.txt" && return 0
 	[[ -f "$WG_CONF" ]] && grep -qx "# BEGIN_PEER $n" "$WG_CONF" && return 0
+	have_ikev2 && ikev2_has_client "$n" && return 0
 	return 1
 }
 
@@ -98,6 +99,8 @@ current_counters() { # key name rx tx since    (server view: rx = from device, t
 	if [[ -n "$OVPN_STATUS" ]]; then
 		awk -F, '$1=="CLIENT_LIST" && $2!="UNDEF" { print "ovpn:"$2":"$9"\t"$2"\t"$6"\t"$7"\t"$9 }' "$OVPN_STATUS"
 	fi
+	# IKEv2: one counter pair per tunnel, keyed by when it was added
+	ikev2_sas | awk -F'\t' '{ print "ike:"$1":"$6"\t"$1"\t"$4"\t"$5"\t"$6 }'
 }
 
 collect_traffic() {
@@ -172,6 +175,8 @@ device_addresses() { # all VPN addresses (v4 and v6) of a device, one per line
 	fi
 	[[ -f /etc/openvpn/server/ipp.txt ]] && awk -F, -v n="$n" '$1==n {print $2; if ($3!="") print $3}' /etc/openvpn/server/ipp.txt
 	[[ -n "$OVPN_STATUS" ]] && awk -F, -v n="$n" '$1=="CLIENT_LIST" && $2==n {print $4; if ($5!="") print $5}' "$OVPN_STATUS"
+	# IKEv2 addresses are leased per connection: block the current ones (re-checked every minute)
+	ikev2_sas | awk -F'\t' -v n="$n" '$1==n && $3!="-" {print $3}'
 	return 0
 }
 

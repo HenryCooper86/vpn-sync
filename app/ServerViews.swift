@@ -566,12 +566,16 @@ struct InstallPanel: View {
     @State private var installWG = true
     @State private var wgPort = "443"
     @State private var dns = 3
+    @State private var installIPsec = false
     @State private var client = "client"
 
     private let dnsChoices = [(1, "System resolvers"), (2, "Google"), (3, "Cloudflare 1.1.1.1"), (4, "OpenDNS"),
                               (5, "Quad9"), (6, "Gcore"), (7, "AdGuard")]
     private var hasOVPN: Bool { (probe["OPENVPN"] ?? "none") != "none" }
     private var hasWG: Bool { (probe["WIREGUARD"] ?? "none") != "none" }
+    /// nil when the server's tools are too old to report it
+    private var hasIPsec: Bool? { probe["IPSEC"].map { $0 != "none" } }
+    private var willInstallIPsec: Bool { hasIPsec == false && installIPsec }
     private var hasTools: Bool { probe["TOOLS"] == "installed" }
     private var willInstallVPN: Bool { (!hasOVPN && installOVPN) || (!hasWG && installWG) }
 
@@ -595,7 +599,7 @@ struct InstallPanel: View {
             case .ready:
                 options
             case .installing:
-                Text(willInstallVPN ? "Installing… a fresh OpenVPN install takes a few minutes. Keep this window open." : "Setting up…")
+                Text(willInstallVPN || willInstallIPsec ? "Installing… a fresh OpenVPN or IPsec install takes a few minutes. Keep this window open." : "Setting up…")
                     .font(.callout)
                 OutputView(text: m.opLog, height: 260)
             case .finished:
@@ -624,6 +628,7 @@ struct InstallPanel: View {
         else if installOVPN { parts.append("\(ovpnProto.uppercased()) \(ovpnPort)") }
         if let w = probe["WIREGUARD"], w != "none" { parts.append(w.uppercased()) }
         else if installWG { parts.append("UDP \(wgPort)") }
+        if hasIPsec == true || willInstallIPsec { parts.append("UDP 500 and 4500 for IKEv2") }
         return parts.joined(separator: ", ")
     }
 
@@ -633,6 +638,10 @@ struct InstallPanel: View {
                 GridRow { Text("System").foregroundStyle(.secondary); Text(probe["OS"] ?? "unknown") }
                 GridRow { Text("OpenVPN").foregroundStyle(.secondary); Text(hasOVPN ? "installed (\(probe["OPENVPN"]!.uppercased())), will be kept" : "not installed") }
                 GridRow { Text("WireGuard").foregroundStyle(.secondary); Text(hasWG ? "installed (\(probe["WIREGUARD"]!.uppercased())), will be kept" : "not installed") }
+                GridRow {
+                    Text("IPsec/IKEv2").foregroundStyle(.secondary)
+                    Text(hasIPsec == true ? "installed (\(probe["IPSEC"]!.replacingOccurrences(of: "ikev2", with: "IKEv2, Libreswan"))), will be kept" : "not installed")
+                }
                 GridRow { Text("Server tools").foregroundStyle(.secondary); Text(hasTools ? "installed (will be updated)" : "will be installed") }
             }
             .font(.callout)
@@ -678,11 +687,20 @@ struct InstallPanel: View {
                               : "Both VPNs are installed. Setup adds the server tools and keeps all VPN settings and devices.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+            if hasIPsec != true {
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("Also install IPsec/IKEv2", isOn: $installIPsec)
+                    Text("Built into macOS, iOS, Windows and Android, no app needed. Uses hwdsl2's setup-ipsec-vpn in IKEv2-only mode; every device gets an IKEv2 profile. Open UDP 500 and 4500 in the server's firewall.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(14)
+                .glassPanel(18)
+            }
             if let problem { Text(problem).font(.callout).foregroundStyle(.red) }
             HStack {
                 Spacer()
                 Button("Cancel") { onDone() }.keyboardShortcut(.cancelAction)
-                Button(willInstallVPN ? "Install" : (hasTools ? "Update Tools" : "Set Up")) { Task { await install() } }
+                Button(willInstallVPN || willInstallIPsec ? "Install" : (hasTools ? "Update Tools" : "Set Up")) { Task { await install() } }
                     .keyboardShortcut(.defaultAction).glassButton(prominent: true)
                     .disabled(problem != nil || probe["PKG"] == "unsupported")
             }
@@ -712,6 +730,7 @@ struct InstallPanel: View {
         if !hasWG {
             if installWG { args += ["--wireguard-port", wgPort] } else { args.append("--no-wireguard") }
         }
+        if willInstallIPsec { args.append("--ipsec") }
         let (code, out) = await m.cli(args, label: "Setting up \(name)…")
         if code == 0 && out.contains("install finished") {
             phase = .finished

@@ -7,8 +7,10 @@
 #   OVPNTIME <epoch the OpenVPN status file was written>      (OpenVPN refreshes it every 60 s)
 #   OVPN  <name> <real ip> <vpn ip> <bytes rx> <bytes tx> <connected since>
 #   WG    <name> <endpoint ip|-> <vpn ip> <bytes rx> <bytes tx> <latest handshake, 0 = never>
+#   IKE   <name> <real ip|-> <vpn ip|-> <bytes rx> <bytes tx> <connected since>   (IKEv2; all of a
+#         device's tunnels added up)
 #   EVENT <epoch> openvpn <name> connected|disconnected <ip|->   (from the OpenVPN log, instant)
-#   SERVICE <openvpn|wireguard> <active|inactive|failed|missing> <active since epoch|0>
+#   SERVICE <openvpn|wireguard|ipsec> <active|inactive|failed|missing> <active since epoch|0>
 #   TOTALS <iface> <today rx> <today tx> <month rx> <month tx>   (bytes, from vnstat; every ~30 s)
 #   DEVINFO <name> <platform> <app>   (what OpenVPN clients report, last 30 days; every ~5 min)
 #   DAY   <yyyy-mm-dd> <rx> <tx>       (server traffic per day, last 30 days, from vnstat; every ~5 min)
@@ -50,6 +52,9 @@ snapshot() {
 			       name=($1 in nm)?nm[$1]:substr($1,1,8)
 			       print "WG\t"name"\t"ep"\t"vip[$1]"\t"$6"\t"$7"\t"$5 }'
 	fi
+	ikev2_sas | awk -F'\t' '
+		{ n=$1; if (!(n in rx)) { order[++k]=n; since[n]=$6 } ip[n]=$2; vip[n]=$3; rx[n]+=$4; tx[n]+=$5; if ($6+0 < since[n]+0) since[n]=$6 }
+		END { for (i=1; i<=k; i++) { n=order[i]; printf "IKE\t%s\t%s\t%s\t%.0f\t%.0f\t%s\n", n, ip[n], vip[n], rx[n], tx[n], since[n] } }'
 }
 
 events_since() { # OpenVPN connect/disconnect lines from the journal after epoch $1

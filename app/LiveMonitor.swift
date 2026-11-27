@@ -10,6 +10,8 @@ enum LiveLink: Equatable { case off, connecting, live, retrying }
 
 struct OVPNConn: Equatable { var realIP: String; var vpnIP: String; var rx: Int64; var tx: Int64; var since: Date }
 struct WGPeer: Equatable { var endpoint: String?; var vpnIP: String; var rx: Int64; var tx: Int64; var handshake: Date? }
+/// An IKEv2 device connected now (all its tunnels added up).
+struct IKEConn: Equatable { var realIP: String; var vpnIP: String; var rx: Int64; var tx: Int64; var since: Date }
 /// Bytes per second as seen from the device: down = server→device, up = device→server.
 struct Rate: Equatable { var down: Double; var up: Double }
 struct ServiceState: Equatable { var state: String; var since: Date? }   // state: active, inactive, failed, missing…
@@ -17,18 +19,25 @@ struct LiveEvent: Identifiable, Equatable {
     let id = UUID()
     let time: Date
     let device: String
-    let vpn: String        // "OpenVPN" / "WireGuard"
+    let vpn: String        // "OpenVPN" / "WireGuard" / "IKEv2"
     let connected: Bool
     let ip: String
 }
 
-/// A service action waiting for confirmation. vpn: "openvpn", "wireguard", "all" or "reboot".
+/// A service action waiting for confirmation. vpn: "openvpn", "wireguard", "ipsec", "all" or "reboot".
 struct ServiceAction: Identifiable, Equatable {
     let server: String
     let vpn: String
     let action: String     // start, stop, restart, reboot
     var id: String { "\(server)/\(vpn)/\(action)" }
-    var vpnLabel: String { vpn == "openvpn" ? "OpenVPN" : vpn == "wireguard" ? "WireGuard" : "both VPNs" }
+    var vpnLabel: String {
+        switch vpn {
+        case "openvpn": return "OpenVPN"
+        case "wireguard": return "WireGuard"
+        case "ipsec": return "IPsec"
+        default: return "all VPNs"
+        }
+    }
 }
 
 /// A WireGuard peer counts as connected while its last handshake is this recent
@@ -46,6 +55,7 @@ final class ServerWatcher {
     private(set) var link: LiveLink = .off { didSet { changed() } }
     private(set) var ovpnLive: [String: OVPNConn] = [:]
     private(set) var wgLive: [String: WGPeer] = [:]
+    private(set) var ikeLive: [String: IKEConn] = [:]
     private(set) var rates: [String: Rate] = [:]
     private(set) var services: [String: ServiceState] = [:]
     private(set) var events: [LiveEvent] = []
@@ -66,6 +76,7 @@ final class ServerWatcher {
     private var lineBuffer = ""
     private var snapOVPN: [String: OVPNConn] = [:]
     private var snapWG: [String: WGPeer] = [:]
+    private var snapIKE: [String: IKEConn] = [:]
     private var snapServices: [String: ServiceState] = [:]
     private var snapTime = 0
     private var snapUsage: UsageState?
@@ -89,25 +100,26 @@ final class ServerWatcher {
         guard let hs = wgLive[name]?.handshake else { return false }
         return (lastSnapshot ?? Date()).timeIntervalSince(hs) < wgOnlineWindow
     }
-    func isOnline(_ name: String) -> Bool { ovpnLive[name] != nil || wgOnline(name) }
+    func isOnline(_ name: String) -> Bool { ovpnLive[name] != nil || wgOnline(name) || ikeLive[name] != nil }
+    /// Everyone connected now, on any VPN.
+    var onlineNames: Set<String> { Set(ovpnLive.keys).union(wgLive.keys.filter { wgOnline($0) }).union(ikeLive.keys) }
 
     /// Every server's changes refresh the UI: the menu bar shows all servers.
     private func changed() { model?.objectWillChange.send() }
 
     /// Devices connected right now, by name: how each is connected and how fast.
     var onlineDevices: [(name: String, via: String, rate: Rate?)] {
-        let names = Set(ovpnLive.keys).union(wgLive.keys.filter { wgOnline($0) }).sorted {
-            $0.localizedStandardCompare($1) == .orderedAscending
-        }
+        let names = onlineNames.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
         return names.map { n in
-            let o = ovpnLive[n], w = wgOnline(n) ? wgLive[n] : nil
-            let via: String
-            switch (o, w) {
-            case let (o?, nil): via = "OpenVPN from \(withFlag(o.realIP))"
-            case let (nil, w?): via = "WireGuard from \(w.endpoint.map(withFlag) ?? "an unknown address")"
-            case let (o?, _?): via = "OpenVPN and WireGuard from \(withFlag(o.realIP))"
-            default: via = ""
-            }
+            let o = ovpnLive[n], w = wgOnline(n) ? wgLive[n] : nil, k = ikeLive[n]
+            var vpns: [String] = []
+            if o != nil { vpns.append("OpenVPN") }
+            if w != nil { vpns.append("WireGuard") }
+            if k != nil { vpns.append("IKEv2") }
+            let from = o?.realIP ?? k.map(\.realIP) ?? w?.endpoint
+            let list = vpns.count <= 2 ? vpns.joined(separator: " and ")
+                : vpns.dropLast().joined(separator: ", ") + " and " + vpns.last!
+            let via = "\(list) from \(from.flatMap { $0 == "-" ? nil : withFlag($0) } ?? "an unknown address")"
             return (n, via, rates[n])
         }
     }
@@ -153,8 +165,8 @@ final class ServerWatcher {
     }
 
     private func resetState() {
-        ovpnLive = [:]; wgLive = [:]; rates = [:]; services = [:]; lastSnapshot = nil
-        snapOVPN = [:]; snapWG = [:]; snapServices = [:]; ovpnOverride = [:]; prevCounters = [:]
+        ovpnLive = [:]; wgLive = [:]; ikeLive = [:]; rates = [:]; services = [:]; lastSnapshot = nil
+        snapOVPN = [:]; snapWG = [:]; snapIKE = [:]; snapServices = [:]; ovpnOverride = [:]; prevCounters = [:]
         ovpnFileTime = 0; prevOVPNFileTime = 0; lineBuffer = ""; firstSnapshot = true
     }
 
@@ -198,7 +210,7 @@ final class ServerWatcher {
             link = .live
         case "SNAPSHOT":
             snapTime = Int(f[safe: 1] ?? "") ?? Int(Date().timeIntervalSince1970)
-            snapOVPN = [:]; snapWG = [:]; snapServices = [:]
+            snapOVPN = [:]; snapWG = [:]; snapIKE = [:]; snapServices = [:]
         case "USAGEAT":
             snapUsage = UsageState()
             _ = snapUsage?.apply(f)
@@ -223,6 +235,9 @@ final class ServerWatcher {
             let hs = Int(f[6]) ?? 0
             snapWG[f[1]] = WGPeer(endpoint: f[2] == "-" ? nil : f[2], vpnIP: f[3], rx: Int64(f[4]) ?? 0,
                                   tx: Int64(f[5]) ?? 0, handshake: hs > 0 ? Date(timeIntervalSince1970: TimeInterval(hs)) : nil)
+        case "IKE" where f.count >= 7:
+            snapIKE[f[1]] = IKEConn(realIP: f[2], vpnIP: f[3], rx: Int64(f[4]) ?? 0, tx: Int64(f[5]) ?? 0,
+                                    since: Date(timeIntervalSince1970: TimeInterval(Int(f[6]) ?? 0)))
         case "EVENT" where f.count >= 6:
             let t = Int(f[1]) ?? snapTime
             let connected = f[4] == "connected"
@@ -266,6 +281,17 @@ final class ServerWatcher {
                 addEvent(LiveEvent(time: now, device: n, vpn: "WireGuard", connected: false, ip: snapWG[n]?.endpoint ?? "-"))
             }
         }
+        // IKEv2: connect/disconnect from who has a tunnel in this snapshot
+        if !firstSnapshot {
+            let was = Set(ikeLive.keys), now2 = Set(snapIKE.keys)
+            for n in now2.subtracting(was).sorted() {
+                addEvent(LiveEvent(time: now, device: n, vpn: "IKEv2", connected: true, ip: snapIKE[n]?.realIP ?? "-"))
+            }
+            for n in was.subtracting(now2).sorted() {
+                addEvent(LiveEvent(time: now, device: n, vpn: "IKEv2", connected: false, ip: ikeLive[n]?.realIP ?? "-"))
+            }
+        }
+        ikeLive = snapIKE
         ovpnLive = ovpn
         services = snapServices
 
@@ -286,6 +312,11 @@ final class ServerWatcher {
                     newRates[n] = Rate(down: (newRates[n]?.down ?? 0) + r.down, up: (newRates[n]?.up ?? 0) + r.up)
                 }
             } else if let r = rates[n], ovpn[n] != nil {
+                newRates[n] = Rate(down: (newRates[n]?.down ?? 0) + r.down, up: (newRates[n]?.up ?? 0) + r.up)
+            }
+        }
+        for (n, k) in snapIKE {
+            if let r = rate("ike:\(n)", rx: k.rx, tx: k.tx, time: snapTime) {
                 newRates[n] = Rate(down: (newRates[n]?.down ?? 0) + r.down, up: (newRates[n]?.up ?? 0) + r.up)
             }
         }
@@ -337,10 +368,11 @@ final class ServerWatcher {
         }
         for (n, w) in snapWG { add("wg:\(n)", device: n, proto: "WireGuard", rx: w.rx, tx: w.tx) }
         for (n, o) in snapOVPN { add("ovpn:\(n)", device: n, proto: "OpenVPN", rx: o.rx, tx: o.tx) }
+        for (n, k) in snapIKE { add("ike:\(n)", device: n, proto: "IKEv2", rx: k.rx, tx: k.tx) }
 
         let down = rates.values.reduce(0) { $0 + $1.down }
         let up = rates.values.reduce(0) { $0 + $1.up }
-        let onlineNames = Set(ovpnLive.keys).union(wgLive.keys.filter { wgOnline($0) })
+        let onlineNames = self.onlineNames
         let online = onlineNames.count
         history.append(TrafficPoint(time: now, down: down, up: up, online: online))
         let cutoff = now.addingTimeInterval(-3600)
@@ -365,12 +397,12 @@ final class ServerWatcher {
     /// Test hook: with VPNSYNC_DEBUG_DIR set, write the selected server's live state after every snapshot.
     private func writeDebugState() {
         guard let dir = ProcessInfo.processInfo.environment["VPNSYNC_DEBUG_DIR"] else { return }
-        var out = "server=\(server) link=\(link) snapshot=\(snapTime) online=\(Set(ovpnLive.keys).union(wgLive.keys.filter { wgOnline($0) }).count)\n"
+        var out = "server=\(server) link=\(link) snapshot=\(snapTime) online=\(onlineNames.count)\n"
         for (k, s) in services.sorted(by: { $0.key < $1.key }) { out += "SERVICE \(k) \(s.state)\n" }
-        let names = Set(ovpnLive.keys).union(wgLive.keys).sorted()
+        let names = Set(ovpnLive.keys).union(wgLive.keys).union(ikeLive.keys).sorted()
         for n in names {
             let r = rates[n].map { "down=\(Int($0.down)) up=\(Int($0.up))" } ?? "-"
-            out += "\(n)\tonline=\(isOnline(n))\tovpn=\(ovpnLive[n]?.realIP ?? "-")\twg=\(wgOnline(n) ? (wgLive[n]?.endpoint ?? "?") : "-")\trate=\(r)\n"
+            out += "\(n)\tonline=\(isOnline(n))\tovpn=\(ovpnLive[n]?.realIP ?? "-")\twg=\(wgOnline(n) ? (wgLive[n]?.endpoint ?? "?") : "-")\tike=\(ikeLive[n].map { "\($0.realIP) \($0.vpnIP)" } ?? "-")\trate=\(r)\n"
         }
         for e in events.prefix(10) { out += "EVENT \(Int(e.time.timeIntervalSince1970)) \(e.device) \(e.vpn) \(e.connected ? "connected" : "disconnected") \(e.ip)\n" }
         out += "NOTIFY \(model?.notify ?? false) auth=\(Notifier.shared.authStatus)\n"
@@ -444,6 +476,7 @@ extension Model {
     var liveState: LiveLink { live?.link ?? .off }
     var ovpnLive: [String: OVPNConn] { live?.ovpnLive ?? [:] }
     var wgLive: [String: WGPeer] { live?.wgLive ?? [:] }
+    var ikeLive: [String: IKEConn] { live?.ikeLive ?? [:] }
     var rates: [String: Rate] { live?.rates ?? [:] }
     var events: [LiveEvent] { live?.events ?? [] }
     var lastSnapshot: Date? { live?.lastSnapshot }
@@ -455,14 +488,12 @@ extension Model {
     /// Profile devices plus any device only seen live (e.g. created outside VPN Sync).
     var allDeviceNames: [String] {
         var names = devices.map(\.name)
-        for n in Set(ovpnLive.keys).union(wgLive.keys) where !names.contains(n) { names.append(n) }
+        for n in Set(ovpnLive.keys).union(wgLive.keys).union(ikeLive.keys) where !names.contains(n) { names.append(n) }
         return names
     }
     /// Devices online on any server, for the menu-free summary.
     var onlineEverywhere: Int {
-        watchers.values.reduce(0) { sum, w in
-            sum + Set(w.ovpnLive.keys).union(w.wgLive.keys.filter { w.wgOnline($0) }).count
-        }
+        watchers.values.reduce(0) { sum, w in sum + w.onlineNames.count }
     }
 
     /// Keeps exactly one running watcher per configured server while monitoring is on.
@@ -570,6 +601,7 @@ struct LiveLine: View {
 
     private var location: String? {
         if let o = m.ovpnLive[name] { return countryOf(o.realIP) }
+        if let k = m.ikeLive[name], k.realIP != "-" { return countryOf(k.realIP) }
         if m.wgOnline(name), let ep = m.wgLive[name]?.endpoint { return countryOf(ep) }
         return nil
     }
@@ -582,6 +614,10 @@ struct LiveLine: View {
         }
         if m.wgOnline(name), let w = m.wgLive[name] {
             parts.append("\(parts.isEmpty ? "On " : "and ")WireGuard from \(w.endpoint.map(withFlag) ?? "an unknown address")")
+        }
+        if let k = m.ikeLive[name] {
+            parts.append("\(parts.isEmpty ? "On " : "and ")IKEv2 from \(k.realIP == "-" ? "an unknown address" : withFlag(k.realIP))"
+                         + (parts.isEmpty ? " since \(k.since.formatted(date: .omitted, time: .shortened))" : ""))
         }
         if !parts.isEmpty { return parts.joined(separator: ", ") }
         if let hs = m.wgLive[name]?.handshake {
@@ -637,7 +673,7 @@ struct LiveToggle: View {
     }
 }
 
-/// OpenVPN / WireGuard service state with start, stop, restart, and a server reboot.
+/// OpenVPN / WireGuard (and IPsec where installed) service state with start, stop, restart, and a server reboot.
 struct ServicesBar: View {
     @EnvironmentObject var m: Model
     @Environment(\.theme) private var t
@@ -647,13 +683,16 @@ struct ServicesBar: View {
                 HStack(spacing: 8) {
                     serviceMenu("openvpn", "OpenVPN")
                     serviceMenu("wireguard", "WireGuard")
+                    // only where IPsec/IKEv2 is installed (older server tools don't report it)
+                    if let s = m.services["ipsec"], s.state != "missing" { serviceMenu("ipsec", "IPsec") }
                 }
             }
             Spacer()
             Menu {
-                Button("Restart Both VPNs…") { m.confirmService = ServiceAction(server: m.server, vpn: "all", action: "restart") }
-                Button("Stop Both VPNs…") { m.confirmService = ServiceAction(server: m.server, vpn: "all", action: "stop") }
-                Button("Start Both VPNs") { Task { await m.runService(ServiceAction(server: m.server, vpn: "all", action: "start")) } }
+                let all = hasIPsec ? "All VPNs" : "Both VPNs"
+                Button("Restart \(all)…") { m.confirmService = ServiceAction(server: m.server, vpn: "all", action: "restart") }
+                Button("Stop \(all)…") { m.confirmService = ServiceAction(server: m.server, vpn: "all", action: "stop") }
+                Button("Start \(all)") { Task { await m.runService(ServiceAction(server: m.server, vpn: "all", action: "start")) } }
                 Divider()
                 Button("Reboot Server…") { m.confirmService = ServiceAction(server: m.server, vpn: "reboot", action: "reboot") }
             } label: {
@@ -666,6 +705,8 @@ struct ServicesBar: View {
         }
         .disabled(m.busy || m.server.isEmpty)
     }
+
+    private var hasIPsec: Bool { (m.services["ipsec"]?.state).map { $0 != "missing" } ?? false }
 
     @ViewBuilder private func serviceMenu(_ vpn: String, _ label: String) -> some View {
         let s = m.services[vpn]

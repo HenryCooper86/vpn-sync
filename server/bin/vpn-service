@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # vpn-service — start, stop, restart or show the VPN services.
-# Usage: vpn-service <openvpn|wireguard|all> <start|stop|restart|status>
+# Usage: vpn-service <openvpn|wireguard|ipsec|all> <start|stop|restart|status>
 #        vpn-service reboot            reboot the whole server
-# Status lines (tab separated): SERVICE <openvpn|wireguard> <active|inactive|failed|missing> <active since epoch|0>
+# Status lines (tab separated): SERVICE <openvpn|wireguard|ipsec> <active|inactive|failed|missing> <active since epoch|0>
+# ("ipsec" is reported only where IPsec/IKEv2 is installed.)
 # Stopping doesn't disable the service: it starts again at the next boot.
 set -euo pipefail
 # shellcheck source=../lib/common.sh
@@ -13,12 +14,14 @@ unit_for() {
 	case "$1" in
 		openvpn) echo "openvpn-server@server.service" ;;
 		wireguard) echo "wg-quick@wg0.service" ;;
+		ipsec) echo "ipsec.service" ;;
 	esac
 }
 installed() {
 	case "$1" in
 		openvpn) [[ -f "$OVPN_SERVER_CONF" ]] ;;
 		wireguard) [[ -f "$WG_CONF" ]] ;;
+		ipsec) [[ -f "$IKEV2_CONF" ]] ;;
 	esac
 }
 status_line() {
@@ -41,8 +44,8 @@ if [[ "${1:-}" == reboot ]]; then
 fi
 
 target="${1:-}" action="${2:-}"
-case "$target" in openvpn|wireguard) vpns=("$target") ;; all) vpns=(openvpn wireguard) ;; *)
-	echo "usage: vpn-service <openvpn|wireguard|all> <start|stop|restart|status> | vpn-service reboot" >&2; exit 64 ;; esac
+case "$target" in openvpn|wireguard|ipsec) vpns=("$target") ;; all) vpns=(openvpn wireguard); [[ -f "$IKEV2_CONF" ]] && vpns+=(ipsec) ;; *)
+	echo "usage: vpn-service <openvpn|wireguard|ipsec|all> <start|stop|restart|status> | vpn-service reboot" >&2; exit 64 ;; esac
 case "$action" in start|stop|restart|status) ;; *) echo "action must be start, stop, restart or status" >&2; exit 64 ;; esac
 
 rc=0
@@ -52,6 +55,7 @@ for vpn in "${vpns[@]}"; do
 			[[ "$target" == all ]] && continue
 			echo "$vpn is not installed on this server" >&2; exit 66
 		fi
+		[[ "$vpn" == ipsec ]] && mkdir -p /run/pluto
 		if systemctl "$action" "$(unit_for "$vpn")"; then
 			echo "$vpn: ${action/stop/stopp}ed"
 		else
