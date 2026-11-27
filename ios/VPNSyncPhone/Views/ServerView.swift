@@ -15,6 +15,7 @@ struct ServerView: View {
     @State private var selecting = false
     @State private var selection: Set<String> = []
     @State private var removing: [String]?
+    @State private var powerHelp = false
 
     var body: some View {
         ScrollView {
@@ -59,13 +60,17 @@ struct ServerView: View {
                     Divider()
                     Button("Restart All VPNs…", systemImage: "arrow.triangle.2.circlepath") { confirm = ServiceAction(server: name, vpn: "all", action: "restart") }
                     Button("Reboot Server…", systemImage: "power", role: .destructive) { confirm = ServiceAction(server: name, vpn: "reboot", action: "reboot") }
+                    Divider()
                     if store.canPower(name) {
                         let st = store.instances[name]
-                        Divider()
                         Button("Stop Server…", systemImage: "stop.circle", role: .destructive) { confirm = ServiceAction(server: name, vpn: "instance", action: "stop") }
                             .disabled(st?.isDown == true || st?.state == "pending")
                         Button("Start Server", systemImage: "play.circle") { run(ServiceAction(server: name, vpn: "instance", action: "start")) }
                             .disabled(st?.isRunning == true || st?.state == "pending" || st?.state == "stopping")
+                    } else {
+                        // not set up yet: say what's missing instead of hiding the actions
+                        Button("Stop Server…", systemImage: "stop.circle") { powerHelp = true }
+                        Button("Start Server", systemImage: "play.circle") { powerHelp = true }
                     }
                 } label: { Image(systemName: "ellipsis.circle") }
                 .accessibilityLabel("Server actions")
@@ -108,6 +113,11 @@ struct ServerView: View {
                  : confirm?.action == "reboot" ? "Every device is disconnected for about a minute." : "Devices on it reconnect on their own.")
         }
         .overlay(alignment: .bottom) { if let busy { ProgressView(busy).padding().card(16, padding: 4).padding() } }
+        .alert("Stopping and starting needs the Lightsail key", isPresented: $powerHelp) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(powerHelpText)
+        }
         .onAppear { openRequestedTab() }
         .task { await store.refreshInstance(name) }
     }
@@ -167,6 +177,19 @@ struct ServerView: View {
                 }
             }
         }
+    }
+
+    private var powerHelpText: String {
+        let s = store.server(name)
+        if store.demo { return "Not available with the made-up demo servers." }
+        let steps = "On the Mac, open VPN Sync → Settings → iPhone, tick Include the Lightsail key, click Export for iPhone…, AirDrop the file to this iPhone and open it with VPN Sync."
+        if s?.region == nil && store.awsKey == nil {
+            return "This iPhone doesn't know \(name)'s Lightsail details or have the Lightsail key yet. \(steps)"
+        }
+        if s?.region == nil {
+            return "This iPhone doesn't know \(name)'s Lightsail details yet (it was imported before they were included). \(steps)"
+        }
+        return "This iPhone doesn't have the Lightsail key yet. \(steps)"
     }
 
     private var removeTitle: String {
