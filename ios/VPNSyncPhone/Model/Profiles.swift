@@ -33,13 +33,19 @@ enum Profiles {
     /// Downloads one device's files. Old downloads are removed first.
     @MainActor
     static func fetch(_ device: String, server: String, store: Store) async throws -> [ProfileFile] {
-        let r = try await store.run(server, "/usr/local/sbin/vpn-export-profiles --device \(device)", timeout: 60)
-        guard r.code == 0 else { throw StoreError.failed(r.stderr.isEmpty ? "Couldn't get \(device)'s profiles." : r.stderr) }
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("profiles", isDirectory: true)
         try? FileManager.default.removeItem(at: dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let files: [(String, Data)]
+        if store.demo {
+            files = DemoData.profiles(device, server: server).map { ($0.file, Data($0.text.utf8)) }
+        } else {
+            let r = try await store.run(server, "/usr/local/sbin/vpn-export-profiles --device \(device)", timeout: 60)
+            guard r.code == 0 else { throw StoreError.failed(r.stderr.isEmpty ? "Couldn't get \(device)'s profiles." : r.stderr) }
+            files = try untar(r.stdout)
+        }
         var out: [ProfileFile] = []
-        for (path, data) in try untar(r.stdout) where !path.hasSuffix("/") && !path.hasSuffix(".png") {
+        for (path, data) in files where !path.hasSuffix("/") && !path.hasSuffix(".png") {
             let url = dir.appendingPathComponent((path as NSString).lastPathComponent)
             try data.write(to: url, options: [.atomic, .completeFileProtection])
             out.append(ProfileFile(url: url))

@@ -140,6 +140,7 @@ final class ServerLive: ObservableObject, Identifiable {
     func restart() { stop(); first = true; start() }
 
     private func loop() async {
+        if store?.demo == true { await demoLoop(); return }
         var delay: UInt64 = 2
         while !Task.isCancelled {
             guard let store else { return }
@@ -163,6 +164,19 @@ final class ServerLive: ObservableObject, Identifiable {
             }
             try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
             delay = min(delay * 2, 30)
+        }
+    }
+
+    /// Demo: a snapshot from DemoData every 3 seconds, like vpn-status --watch 3.
+    private func demoLoop() async {
+        link = .connecting
+        await refreshDevices()
+        var n = 0
+        while !Task.isCancelled {
+            var p = SnapshotParser()
+            for line in DemoData.snapshot(name, full: n % 10 == 0) { if let s = p.feed(line) { apply(s) } }
+            n += 1
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
         }
     }
 

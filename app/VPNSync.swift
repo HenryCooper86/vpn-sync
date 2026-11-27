@@ -5,7 +5,9 @@ import AppKit
 
 // MARK: - Paths and helpers
 
-let home = FileManager.default.homeDirectoryForCurrentUser
+/// The home folder: the user's own, or a demo home (VPNSYNC_HOME, see demo/run-mac-demo.sh).
+let home = ProcessInfo.processInfo.environment["VPNSYNC_HOME"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+    ?? FileManager.default.homeDirectoryForCurrentUser
 let configDir = home.appendingPathComponent(".config/vpn-sync")
 let cliURL = home.appendingPathComponent(".local/bin/vpn-sync")
 let desktopDir = home.appendingPathComponent("Desktop")
@@ -896,6 +898,11 @@ struct ContentView: View {
         .sheet(item: $m.qrDevice) { QRSheet(device: $0) }
         // on its own view: many .sheet modifiers on one view don't all present
         .background(Color.clear.sheet(item: $m.limitTarget) { LimitSheet(target: $0).environmentObject(m) })
+        // demo mode only (VPNSYNC_HOME): switch tabs from outside, for screenshots without clicking
+        .onReceive(DistributedNotificationCenter.default().publisher(for: Notification.Name("local.vpnsync.demo.tab"))) { n in
+            guard ProcessInfo.processInfo.environment["VPNSYNC_HOME"] != nil, let t = n.object as? String else { return }
+            switch t { case "traffic": tab = .traffic; case "activity": tab = .activity; default: tab = .devices }
+        }
         .alert(serviceTitle, isPresented: Binding(
             get: { m.confirmService != nil },
             set: { if !$0 { m.confirmService = nil } }), presenting: m.confirmService) { a in

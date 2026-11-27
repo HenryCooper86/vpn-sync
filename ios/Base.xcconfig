@@ -1,3 +1,6 @@
-// Shared build settings for the iPhone app. Signing: put your team in ios/Local.xcconfig
-// (git-ignored), e.g.  DEVELOPMENT_TEAM = ABCDE12345
+// Shared build settings for the iPhone app. Your own settings go in ios/Local.xcconfig
+// (git-ignored), for example:
+//   DEVELOPMENT_TEAM = ABCDE12345
+//   VPNSYNC_APP_ICON = AppIconLocal      (an icon made from your picture: swift make-local-icon.swift)
+VPNSYNC_APP_ICON = AppIcon
 #include? "Local.xcconfig"

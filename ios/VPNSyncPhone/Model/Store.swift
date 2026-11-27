@@ -48,9 +48,19 @@ final class Store: ObservableObject {
     private var connections: [String: SSHConnection] = [:]
     private var connecting: [String: Task<SSHConnection, Error>] = [:]
 
+    /// Made-up servers and devices instead of SSH (launch argument -demo YES; for screenshots).
+    let demo = UserDefaults.standard.bool(forKey: "demo")
+
     init() {
-        load()
-        locked = lockEnabled && !servers.isEmpty
+        if demo {
+            servers = DemoData.servers.map {
+                ServerConfig(name: $0.name, host: $0.ip, user: "ubuntu", port: 22, jump: $0.jump,
+                             privateIP: $0.jump == nil ? nil : "172.31.0.20", lastIP: $0.ip, hostKey: "")
+            }
+        } else {
+            load()
+        }
+        locked = lockEnabled && !servers.isEmpty && !demo
         for s in servers { live[s.name] = ServerLive(name: s.name, store: self) }
     }
 
@@ -68,6 +78,7 @@ final class Store: ObservableObject {
     }
 
     private func save() {
+        guard !demo else { return }
         if let d = try? JSONEncoder().encode(servers) {
             try? d.write(to: fileURL, options: [.atomic, .completeFileProtection])
         }
@@ -147,6 +158,7 @@ final class Store: ObservableObject {
     /// Runs one of the server tools (as root via sudo unless the login is root). A dropped
     /// connection is reopened once.
     func run(_ name: String, _ command: String, stdin: Data? = nil, timeout: Int = 120) async throws -> CommandResult {
+        if demo { return demoRun(name, command) }
         let line = sudo(name) + command
         do {
             return try await connection(name).run(line, stdin: stdin, timeout: .seconds(Int64(timeout)))
@@ -156,6 +168,14 @@ final class Store: ObservableObject {
             disconnect(name)
             return try await connection(name).run(line, stdin: stdin, timeout: .seconds(Int64(timeout)))
         }
+    }
+
+    /// Demo answers: device list and usage from DemoData, everything else just succeeds.
+    private func demoRun(_ name: String, _ command: String) -> CommandResult {
+        var lines: [String] = []
+        if command.contains("vpn-export-profiles --list") { lines = DemoData.deviceList(name) }
+        else if command.contains("vpn-usage report") { lines = DemoData.usage(name) }
+        return CommandResult(code: 0, stdout: Data(lines.joined(separator: "\n").utf8), stderr: "")
     }
 
     func sudo(_ name: String) -> String { server(name)?.user == "root" ? "" : "sudo -n " }
@@ -184,6 +204,7 @@ final class Store: ObservableObject {
     }
 
     func unlock() {
+        if demo { locked = false; return }
         let ctx = LAContext()
         var err: NSError?
         guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &err) else { locked = false; return }

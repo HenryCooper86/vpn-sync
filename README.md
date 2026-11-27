@@ -1,172 +1,183 @@
-# VPN Sync
+<p align="center">
+  <img src="https://github.com/HenryCooper86.png?size=240" width="104" height="104" alt="VPN Sync">
+</p>
 
-A macOS app and command-line tool for running your own OpenVPN + WireGuard servers
-(using [Nyr's road-warrior installers](https://github.com/Nyr)) on Lightsail or any VPS,
-optionally with IPsec/IKEv2 (using [hwdsl2's setup-ipsec-vpn](https://github.com/hwdsl2/setup-ipsec-vpn)).
+<h1 align="center">VPN Sync</h1>
 
-- **Set up servers:** add a server with its IP and SSH key (`.pem`), verify its host key,
-  and install OpenVPN and/or WireGuard with your choice of protocol, ports and DNS.
-  Servers that already run a Nyr install are adopted as they are.
-- **Manage devices:** add, remove, batch add (`m1`…`m15`) and batch remove devices on every
-  VPN at once. WireGuard profiles come with QR codes for phones and TVs.
-- **IPsec/IKEv2 (optional):** the VPN built into macOS, iOS, Windows and Android, no app
-  needed. Installed in IKEv2-only mode (the older IPsec/L2TP and Cisco IPsec modes, which use
-  a shared key and password, are off). Every device gets `IKEv2/<name>.mobileconfig` (macOS,
-  iOS), `.sswan` (Android, strongSwan) and `.p12` (Windows); removing a device revokes its
-  certificate. IKEv2 devices show up live, are counted for usage limits and can be paused like
-  the others. If the server's IP changes, it gets a new server certificate and the IKEv2
-  profiles are made again: install them again on each device. Needs UDP 500 and 4500 open.
-- **Survive IP changes:** each server rewrites its own profiles when its public IP
-  changes (at boot and every 15 minutes). The Mac pulls fresh profiles to
-  `~/Desktop/<server>-<ip>/` and fixes OpenVPN Connect's saved profile. With a read-only
-  Lightsail key (Settings → Lightsail), VPN Sync finds a server's new IP after a stop/start
-  on its own, resyncs, and sends a notification.
-- **Watch it live:** see which devices are connected, from where, since when, and how
-  fast, with a log of connects and disconnects, and a macOS notification whenever a
-  device connects or disconnects on any server.
-- **Traffic:** a Traffic tab with today's VPN data (donut), a mirrored speed chart
-  (download above the line, upload below; 5 min / 15 min / 1 h; MB/s or Mbit/s), devices
-  online over time, the server's traffic per day for 30 days (`vnstat`), peak speed,
-  connections, most devices online at once, and devices (with download/upload sparklines) and protocols
-  ranked by data. Star a device to pin it to the top.
-- **Device types:** what each OpenVPN client reports (iPhone, Android, Mac, Windows, Linux,
-  and the app version) is read from the server log; WireGuard devices are guessed from their
-  name. Set any device's type yourself from its ⋯ menu.
-- **Device locations:** a country flag next to each device's address. The lookup is offline,
-  using ip-location-db's `user-country` table (public domain, PDDL, updated daily);
-  `vpn-sync geo update` fetches the latest one, checks its SHA-256 and format, and saves it to
-  `~/.config/vpn-sync/geo/`. The app refreshes it automatically every month. No address is
-  sent anywhere.
-- **Control services:** start, stop or restart OpenVPN, WireGuard and IPsec, or reboot the server.
-- **Usage limits:** each server counts every device's data per day (every minute, so it keeps
-  counting while the app is closed). Set a daily and/or monthly limit per device that either
-  notifies you (at 80% and 100%; the warning level can be changed) or also pauses the device. **Pause Internet** blocks a
-  device's traffic on the server with a firewall rule: it stays connected, nothing is revoked,
-  and **Resume Internet** undoes it. A limit pause lifts at midnight (daily) or on the 1st
-  (monthly); days follow the Mac's time zone.
-  The Devices tab shows each device's usage and limit, says why a paused device is paused
-  with a **Resume** button, and has a summary above the list that can filter it to limited
-  and paused devices. The menu bar panel and the Traffic tab list limited and paused devices
-  with the same actions; the Traffic tab also shows every device's data this month.
-  **Settings → Limits** turns limit notifications on or off (separately from connect
-  banners) and the menu bar mark, sets the warning level (50–90% or off), and lists every
-  limit and pause on
-  every server, with **Add a Limit** for each. The Activity tab logs
-  limit events (80% used, limit reached, paused, resumed, limit set or removed) alongside
-  connects and disconnects while VPN Sync is running.
-- **Menu bar:** a shield with the number of devices online across all servers (plus a pause
-  mark with the number of paused devices, or a gauge when one nears its limit); click it to
-  see who is connected where, or rename (pencil) or remove (trash) a server. Closing the
-  window keeps VPN Sync running there (quit from
-  the menu bar panel or with ⌘Q).
-- **Reach locked-down servers:** connect through another server over a private network
-  (for example two Lightsail instances in one region) so SSH can stay closed to the internet.
+<p align="center">
+  <b>See and control your own VPN servers from your Mac and iPhone.</b><br>
+  Install OpenVPN, WireGuard and IKEv2, or adopt the server you already set up with a script,<br>
+  then watch who's connected, set limits, and manage every device's profiles in one place.
+</p>
 
-## Install (macOS)
+<p align="center">
+  <img src="docs/images/hero.jpg" alt="VPN Sync on the Mac and iPhone" width="900">
+</p>
 
-Needs Xcode or the Command Line Tools (to build the app).
+## Why
+
+One-command installers like [Nyr's openvpn-install and wireguard-install](https://github.com/Nyr)
+and [hwdsl2's setup-ipsec-vpn](https://github.com/hwdsl2/setup-ipsec-vpn) get a VPN running in
+minutes. After that the script is the whole interface: you can't see who's connected or how much
+data each device uses, adding a device means SSH and a text menu, profiles end up scattered, a
+new IP address breaks every client, and a second server doubles all of it.
+
+VPN Sync sits on top of those scripts. It keeps your existing installs as they are, adds a small
+set of tools on each server, and gives you one place to see and manage every server and device.
+It can also set up a fresh server for you.
+
+## What you get
+
+| | |
+|---|---|
+| **Every server in one place** | Switch between servers, or see all of them at once in the menu bar. Servers behind a firewall are reached through another server over a private network. |
+| **Live view** | Who's connected right now, on which VPN, from which country, since when and how fast, with a log of connects and disconnects and a notification for each. |
+| **Traffic** | Speed over time, data per device and per protocol, the server's traffic per day for a month. |
+| **Usage limits** | A daily or monthly limit per device that alerts you at 80% and 100%, or also pauses it. Pause or resume any device's internet by hand; it stays connected and nothing is revoked. |
+| **Devices and profiles** | Add, batch add, remove and batch remove devices on every VPN at once. WireGuard QR codes for phones and TVs, IKEv2 profiles that install natively on iPhone, Mac, Android and Windows. |
+| **IP changes handled** | Each server rewrites its own profiles when its address changes; the Mac pulls fresh copies, fixes OpenVPN Connect and, with a read-only Lightsail key, finds a stopped-and-started server's new IP on its own. |
+| **Install or adopt** | Install OpenVPN and/or WireGuard (Nyr) and optionally IPsec/IKEv2 (hwdsl2, IKEv2-only) with your choice of ports and DNS, or keep what's already there. |
+| **iPhone app** | The same servers on your phone over SSH, without the Mac. |
+| **Command line** | Everything the apps do, as `vpn-sync` on the Mac and small tools on each server. |
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/mac-devices.png" alt="Devices: who's online, usage and limits"></td>
+    <td width="50%"><img src="docs/images/mac-traffic.png" alt="Traffic: speed, data per device, per day"></td>
+  </tr>
+  <tr>
+    <td>Devices: live connections with country, speed and usage; limits and pauses.</td>
+    <td>Traffic: speed over time, data per device and protocol, the server per day.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/mac-activity.png" alt="Activity log"></td>
+    <td><img src="docs/images/mac-menubar.png" alt="Menu bar panel"></td>
+  </tr>
+  <tr>
+    <td>Activity: connects, disconnects and limit events.</td>
+    <td>The menu bar: every server at a glance.</td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/images/iphone-tour.gif" alt="The iPhone app" width="300">
+  &nbsp;&nbsp;
+  <img src="docs/images/iphone-servers.png" alt="iPhone: servers" width="260">
+  &nbsp;&nbsp;
+  <img src="docs/images/iphone-device.png" alt="iPhone: a device" width="260">
+</p>
+
+<sub>Screenshots use made-up servers and devices (`demo/`); no real addresses.</sub>
+
+## Install
+
+**Mac** (macOS 14 or later; needs Xcode or the Command Line Tools to build):
 
 ```bash
 ./install-mac.sh
 ```
 
-This installs `~/.local/bin/vpn-sync` (make sure `~/.local/bin` is on your `PATH`), the
-server bundle in `~/.local/share/vpn-sync/server`, and `~/Applications/VPN Sync.app`.
+This installs the `vpn-sync` command in `~/.local/bin` (put it on your `PATH`), the server tools
+in `~/.local/share/vpn-sync/server`, and `~/Applications/VPN Sync.app`.
 
-## Look and feel
+**iPhone** (iOS 17 or later): open `ios/VPNSyncPhone.xcodeproj` in Xcode, put your team in
+`ios/Local.xcconfig` (`DEVELOPMENT_TEAM = …`, kept out of git) and run it on your phone. With a
+free Apple ID it has to be reinstalled every 7 days. To give it the same icon as the Mac app
+(`app/logo.local.png`), run `swift make-local-icon.swift` in `ios/` and add
+`VPNSYNC_APP_ICON = AppIconLocal` to `ios/Local.xcconfig`.
 
-Liquid Glass panels and buttons on see-through windows that blur what's behind them, with
-material fallbacks on macOS 14–15. Icons are [Lucide](https://lucide.dev) (ISC licence),
-bundled as SVGs in `app/lucide/`. Settings → Appearance: Automatic (follows macOS), Light or
-Dark; buttons use your macOS accent colour. The header's signal orb shows how many devices are
-online and ripples when one connects (not with Reduce Motion). The app icon, a glass shield
-with a tunnel narrowing to a lit keyhole, is drawn by `app/make-icon.swift`.
+**Servers:** Ubuntu, Debian, AlmaLinux, Rocky, CentOS or Fedora with SSH access and `sudo`. The
+Mac installs the tools; nothing to do on the server yourself.
 
-## Using the app
+## Getting started
 
-1. **Add Server…**: name, IP, SSH user, private key (`.pem`). Optionally "connect through
-   another server" with its private IP. Check the fingerprint, then **Trust and Add**.
-2. **Set Up**: VPN Sync shows what's installed. For a fresh server pick OpenVPN TCP/UDP and
-   port, WireGuard port, DNS and the first device name, then **Install** (a few minutes).
-   Tick **Also install IPsec/IKEv2** to add IKEv2 (also on servers that already have
-   OpenVPN/WireGuard; existing devices get IKEv2 profiles).
-   Open the same ports in the provider's firewall (Lightsail: instance → Networking); IKEv2
+1. **Add Server…**: name, address, SSH user and key. Check the host key fingerprint, then
+   **Trust and Add**.
+2. **Set Up**: VPN Sync shows what's installed. Keep it, or pick OpenVPN (TCP/UDP, port),
+   WireGuard (port), DNS and the first device, and tick **Also install IPsec/IKEv2** if you want
+   it. Open the same ports in your provider's firewall (Lightsail: instance → Networking); IKEv2
    needs UDP 500 and 4500.
-3. Use **Add Device / Batch Add… / Batch Remove…** and the row menu to manage devices,
-   **QR** to show a WireGuard code, **Sync Now** after an IP change, and **Live** for
-   monitoring (the bell turns notifications on or off). Use the **OpenVPN / WireGuard**
-   menus to start, stop or restart a VPN and **Server → Reboot Server…** to reboot. Switch
-   servers from the server name menu; edit IP, key or user in **Servers**. A device's
-   **⋯** menu has **Pause Internet** and **Set Usage Limit…**.
+3. **Add Device** (or **Batch Add…**). Profiles land in `~/Desktop/<server>-<ip>/`; scan the
+   WireGuard QR code, import the `.ovpn`, or install the IKEv2 `.mobileconfig`.
+4. **iPhone**: on the Mac, **Settings → iPhone → Export for iPhone…** writes an encrypted file and
+   offers AirDrop. Open it on the phone with VPN Sync and type the passphrase the Mac shows.
 
-## iPhone app
-
-`ios/` holds a companion app for the same servers: who's online (live), speed, data per device
-and per day, usage limits, pause/resume, adding and removing devices, service start/stop and
-reboot, and each device's profiles (WireGuard QR code, `.conf`, `.ovpn`, IKEv2 `.mobileconfig`,
-`.sswan`, `.p12`) to share. It connects to the servers over SSH itself (Apple's swift-nio-ssh;
-Ed25519 keys, pinned host keys, through the jump server when needed), so the Mac doesn't have
-to be on.
-
-1. On the Mac: **Settings → iPhone → Export for iPhone…** writes an encrypted
-   `VPN Sync servers.vpnsync` (AES-GCM, key from a passphrase shown once) and offers AirDrop.
-2. Open the file on the iPhone with VPN Sync and type the passphrase. Keys go to the iPhone's
-   Keychain (this device only); Face ID locks the app.
-3. Build: open `ios/VPNSyncPhone.xcodeproj` in Xcode, put your team in `ios/Local.xcconfig`
-   (`DEVELOPMENT_TEAM = …`, git-ignored) and run it on your iPhone. With a free Apple ID it has
-   to be reinstalled every 7 days. Design notes: `docs/ios-app.md`.
+Settings (the gear, or ⌘,) also has notifications, usage-limit alerts and the warning level,
+the appearance, and a read-only Lightsail key for finding new IPs.
 
 ## Command line
 
 ```
 vpn-sync [server...]                       sync profiles to the Desktop
 vpn-sync --check [server]                  show what would change
-vpn-sync --ip A.B.C.D <server>             use this address
 vpn-sync --add a,b,c <server>              create devices
 vpn-sync --remove a,b <server>             revoke/remove devices
 vpn-sync status <server>                   who is connected now
 vpn-sync watch <server> [--interval N]     stream connection snapshots
-vpn-sync service <server> <openvpn|wireguard|ipsec|all> <start|stop|restart|status>
-vpn-sync reboot <server>
 vpn-sync usage [server...]                 data per device today and this month, limit, % used
 vpn-sync limits [server...]                only devices with a limit or a pause
-vpn-sync limit <server> <device>           one device's limit and usage
 vpn-sync limit <server> <device> --daily 2GB --monthly 50GB --action alert|pause
-vpn-sync limit <server> <device> --clear
 vpn-sync pause | resume <server> <device>  block or unblock a device's traffic
+vpn-sync service <server> <openvpn|wireguard|ipsec|all> <start|stop|restart|status>
+vpn-sync reboot <server>
 vpn-sync server list | add | edit | rename | remove | hostkey | probe | install
 vpn-sync server install <server> --ipsec   also install IPsec/IKEv2 (kept once installed)
 ```
 
-Run `vpn-sync --help` for all options.
+Run `vpn-sync --help` for everything. On a server, `sudo vpn-usage show` prints a usage table and
+`sudo vpn-usage log` the recent pauses, resumes and limit changes.
 
 ## How it works
 
 | Where | What |
 |---|---|
-| `vpn-sync` | Mac CLI. Finds each server (`--ip`, AWS CLI, last IP, configured host, jump server, VPN tunnel addresses), always over SSH with a pinned host key. |
-| `app/` | SwiftUI front end that runs `vpn-sync`. Logs every command to `~/.config/vpn-sync/history.log`. |
-| `server/install.sh` | Uploaded and run by `vpn-sync server install`. Installs packages and tools, installs the VPNs if missing, writes `/etc/vpn-sync.conf`. With `--ipsec` it runs hwdsl2's `vpnsetup.sh` (Libreswan, IKEv2), switches to IKEv2-only mode (`ikev1-policy=drop`, `xl2tpd` off) and creates an IKEv2 client per device; client files live in `/root/vpn-setup/ikev2/`. |
-| `server/bin/vpn-endpoint-sync` | Rewrites profiles and templates for the current public IP and refreshes QR codes (systemd timer). For IKEv2 it issues a server certificate for the new IP, updates `ikev2.conf`, restarts IPsec and exports every client again. |
-| `server/bin/vpn-add-client`, `vpn-remove-client` | Add/remove devices on every VPN by driving the Nyr menus with `expect` and hwdsl2's `ikev2.sh` (`--addclient`; `--revokeclient` then `--deleteclient`). All names are validated first. Removed files are kept in `/root/vpn-sync-backups/`. |
-| `server/bin/vpn-export-profiles` | Streams all client profiles as a tarball. |
-| `server/bin/vpn-status` | Connected devices (OpenVPN status file and log, `wg show` handshakes, `ipsec trafficstatus`) and service state. |
-| `server/bin/vpn-usage` | Per-device data per day in `/var/lib/vpn-sync/usage/` (systemd timer, every minute), limits, and pausing via a `VPNSYNC-BLOCK` chain first in `FORWARD` (IPv4 and IPv6). On the server, `sudo vpn-usage show` prints a table, and `sudo vpn-usage log` lists pauses, resumes and limit changes (also in `journalctl -t vpn-usage`). |
-| `server/bin/vpn-service` | Start/stop/restart the VPN services, or reboot. Stopped services start again at boot. |
+| `vpn-sync` | The Mac command. Finds each server (`--ip`, the AWS CLI, last IP, configured host, jump server, VPN tunnel addresses) and always connects over SSH with a pinned host key. |
+| `app/` | The Mac app (SwiftUI). Runs `vpn-sync`; logs every command to `~/.config/vpn-sync/history.log`. |
+| `ios/` | The iPhone app (SwiftUI). Its own SSH client on Apple's swift-nio-ssh: Ed25519 keys, pinned host keys, jump servers. Notes in `docs/ios-app.md`. |
+| `shared/` | Code both apps compile: the live-stream and usage models, the encrypted export, demo data. |
+| `server/install.sh` | Run by `vpn-sync server install`. Installs the tools, installs the VPNs if missing (Nyr's scripts, and hwdsl2's in IKEv2-only mode with `--ipsec`), writes `/etc/vpn-sync.conf`. |
+| `server/bin/vpn-status` | Connected devices (OpenVPN status and log, `wg show`, `ipsec trafficstatus`), services, traffic totals, usage. |
+| `server/bin/vpn-usage` | Data per device per day (every minute), limits, and pausing through a `VPNSYNC-BLOCK` firewall chain (IPv4 and IPv6). |
+| `server/bin/vpn-add-client`, `vpn-remove-client` | Add or remove a device on every VPN by driving the installers' own menus; names are checked first, removed files are kept in `/root/vpn-sync-backups/`. |
+| `server/bin/vpn-endpoint-sync` | Rewrites profiles for the current public IP at boot and every 15 minutes (for IKEv2: a new server certificate and fresh profiles). |
+| `server/bin/vpn-export-profiles`, `vpn-service` | Profiles as a tarball (all, one device, or a list); start, stop, restart, reboot. |
 
-Local state lives in `~/.config/vpn-sync/`: one `<server>.conf` per server (see
-`examples/server.conf.example`), copies of the SSH keys in `keys/`, pinned host keys in
-`known_hosts`, and the last seen IP per server. None of it belongs in this repository.
+## Privacy and security
+
+- Everything goes over SSH to your own servers, with each server's host key pinned. There's no
+  account, no cloud service and no telemetry.
+- Country flags come from an offline table (ip-location-db, public domain) on the Mac; no
+  address is looked up online.
+- The iPhone export is encrypted (AES-GCM, PBKDF2 passphrase shown once); on the phone the keys
+  live in the Keychain, readable only on that device, and Face ID locks the app.
+- Local state lives in `~/.config/vpn-sync/` (server settings, key copies, pinned host keys);
+  none of it belongs in this repository.
+
+## Try it without a server
+
+```bash
+demo/run-mac-demo.sh
+```
+
+starts the Mac app on made-up servers and devices (your own settings aren't touched). The iPhone
+app has the same demo with the launch argument `-demo YES`.
 
 ## Notes
 
-- macOS asks once whether VPN Sync may access the Desktop folder (profiles live there) and
-  send notifications. A locally built app is signed ad hoc, so every rebuild counts as a new
-  app and macOS asks again.
-
-- Revoking an OpenVPN certificate can't be undone; the app always asks first.
-- OpenVPN's status file refreshes every 60 s, so OpenVPN transfer speeds update once a
-  minute; connects and disconnects show up within seconds from the log.
+- macOS asks once for access to the Desktop folder (where profiles live) and for notifications.
+- Revoking an OpenVPN certificate can't be undone; the apps always ask first.
+- OpenVPN updates its status file once a minute, so OpenVPN speeds update once a minute;
+  connects and disconnects show up within seconds from its log.
 - A WireGuard device counts as connected while its last handshake is under 3 minutes old.
-- Phones and TVs can't be updated remotely. After an IP change, re-import or rescan their
-  profiles from the Desktop folder. A static IP avoids this entirely.
+- Phones and TVs can't be updated remotely: after an IP change, scan or import their profiles
+  again (for IKEv2, install the new profile). A static IP avoids this.
+
+## Credits
+
+[Nyr](https://github.com/Nyr) (OpenVPN and WireGuard installers),
+[hwdsl2](https://github.com/hwdsl2/setup-ipsec-vpn) (IPsec/IKEv2),
+[Libreswan](https://libreswan.org), [swift-nio-ssh](https://github.com/apple/swift-nio-ssh),
+[Lucide](https://lucide.dev) icons (ISC),
+[ip-location-db](https://github.com/sapics/ip-location-db) (PDDL).

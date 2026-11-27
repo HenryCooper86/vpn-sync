@@ -16,3 +16,5 @@ ios/build/
 xcuserdata/
 *.xcuserstate
 *.vpnsync
+demo/build/
+ios/VPNSyncPhone/Assets.xcassets/AppIconLocal.appiconset/
