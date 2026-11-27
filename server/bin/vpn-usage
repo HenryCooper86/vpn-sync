@@ -3,14 +3,19 @@
 #
 #   vpn-usage collect                 (run every minute by vpn-usage.timer) add up each device's
 #                                     traffic since the last run, apply limits, enforce pauses
+#   vpn-usage show [name]             a readable table: usage today and this month, the limit,
+#                                     how much of it is used, and why a device is paused
 #   vpn-usage report                  USAGE / LIMIT / PAUSED lines (see below)
-#   vpn-usage limit <name> [--daily BYTES] [--monthly BYTES] [--action alert|pause]
-#   vpn-usage limit <name> --clear
-#                                     (--tz Area/City sets the time zone days and months follow)
+#   vpn-usage limit <name> [--daily SIZE] [--monthly SIZE] [--action alert|pause]
+#   vpn-usage limit <name> --clear    (SIZE: bytes, or 500MB, 5GB, 1.5TB; options left out keep
+#                                     their value; --tz Area/City sets the time zone days and
+#                                     months follow)
 #   vpn-usage pause <name>            block the device's traffic (nothing is revoked)
-#   vpn-usage forget <name>           drop a removed device's limit, pause and allowance
 #   vpn-usage resume <name>           unblock it; if it was paused by a limit, it stays allowed
 #                                     for the rest of that day/month
+#   vpn-usage forget <name>           drop a removed device's limit, pause and allowance
+#   vpn-usage log [N]                 the last N limit events (default 20): pauses, resumes,
+#                                     limit changes; they're in the journal as "vpn-usage"
 #
 # Report lines (tab separated, bytes; "down" = to the device, "up" = from it):
 #   USAGEAT <epoch> <today yyyy-mm-dd>   (first line; the lines below are the complete state)
@@ -58,6 +63,21 @@ set_line() {
 	awk -F'\t' -v n="$name" '$1 != n' "$file" > "$tmp"
 	[[ -n "$line" ]] && printf '%s\n' "$line" >> "$tmp"
 	chmod 600 "$tmp"; mv "$tmp" "$file"
+}
+
+# log_event TEXT: one line in the system journal (journalctl -t vpn-usage)
+log_event() { logger -t vpn-usage -- "$*" 2>/dev/null || true; }
+
+# size BYTES: "1.5 GB"
+size() { awk -v b="${1:-0}" 'BEGIN { split("B KB MB GB TB", u, " "); i=1; while (b >= 1024 && i < 5) { b/=1024; i++ }
+	if (i==1) { printf "%d B\n", b; exit } t=sprintf("%.1f", b); sub(/\.0$/, "", t); print t " " u[i] }'; }
+
+# limit_text DAILY MONTHLY ACTION: "1 GB a day and 20 GB a month, pauses at 100%"
+limit_text() {
+	local t=""
+	(( ${1:-0} > 0 )) && t="$(size "$1") a day"
+	(( ${2:-0} > 0 )) && t="${t:+$t and }$(size "$2") a month"
+	printf '%s, %s\n' "$t" "$([[ "${3:-}" == pause ]] && echo "pauses at 100%" || echo "alerts only")"
 }
 
 month_totals() { # name down up, this month
@@ -113,11 +133,16 @@ collect_traffic() {
 
 apply_limits() {
 	# lift limit pauses whose period is over, and old resume allowances
-	local tmp; tmp=$(mktemp "$DIR/.tmp.XXXXXX")
+	local tmp lifted n r; tmp=$(mktemp "$DIR/.tmp.XXXXXX")
 	awk -F'\t' -v d="$TODAY" -v m="$MONTH" '
 		$2=="manual" {print; next}
 		$2=="daily" && $3==d {print; next}
-		$2=="monthly" && substr($3,1,7)==m {print}' "$PAUSED" > "$tmp"; mv "$tmp" "$PAUSED"
+		$2=="monthly" && substr($3,1,7)==m {print}' "$PAUSED" > "$tmp"
+	lifted=$(awk -F'\t' 'FILENAME==ARGV[1] {keep[$1]=1; next} !($1 in keep) {print $1"\t"$2}' "$tmp" "$PAUSED")
+	mv "$tmp" "$PAUSED"
+	while IFS=$'\t' read -r n r; do
+		[[ -n "$n" ]] && log_event "$n has internet again: a new $([[ "$r" == daily ]] && echo day || echo month) started"
+	done <<< "$lifted"
 	tmp=$(mktemp "$DIR/.tmp.XXXXXX")
 	awk -F'\t' -v d="$TODAY" -v m="$MONTH" '$2==d || $2==m' "$ALLOW" > "$tmp"; mv "$tmp" "$ALLOW"
 	chmod 600 "$PAUSED" "$ALLOW"
@@ -131,8 +156,10 @@ apply_limits() {
 		month_used=$(awk -F'\t' -v n="$name" '$1==n {printf "%.0f\n", $2+$3}' <<< "$months"); month_used=${month_used:-0}
 		if (( daily > 0 && day_used >= daily )) && ! grep -qP "^\Q$name\E\t$TODAY$" "$ALLOW"; then
 			printf '%s\tdaily\t%s\n' "$name" "$TODAY" >> "$PAUSED"
+			log_event "$name paused: daily limit reached ($(size "$day_used") of $(size "$daily") today), back at midnight"
 		elif (( monthly > 0 && month_used >= monthly )) && ! grep -qP "^\Q$name\E\t$MONTH$" "$ALLOW"; then
 			printf '%s\tmonthly\t%s\n' "$name" "$TODAY" >> "$PAUSED"
+			log_event "$name paused: monthly limit reached ($(size "$month_used") of $(size "$monthly") this month), back on the 1st"
 		fi
 	done < "$LIMITS"
 }
@@ -181,6 +208,52 @@ parse_bytes() { # "5GB", "500MB", "1.5GB", "123" → bytes (binary units)
 	awk -v n="$n" -v u="$unit" 'BEGIN { m=1; if(u=="K")m=1024; if(u=="M")m=1024^2; if(u=="G")m=1024^3; if(u=="T")m=1024^4; printf "%.0f\n", n*m }'
 }
 
+report() { # the machine-readable report (see the top)
+	local months; months=$(month_totals)
+	printf 'USAGEAT\t%s\t%s\n' "$(date +%s)" "$TODAY"
+	awk -F'\t' -v OFS='\t' '
+		FILENAME==ARGV[1] { if (NF>=3) { td[$1]+=$2; tu[$1]+=$3; seen[$1]=1 } next }
+		NF>=3 { md[$1]=$2; mu[$1]=$3; seen[$1]=1 }
+		END { for (n in seen) printf "USAGE\t%s\t%.0f\t%.0f\t%.0f\t%.0f\n", n, td[n], tu[n], md[n], mu[n] }' "$DAYFILE" <(printf '%s\n' "$months")
+	awk -F'\t' -v OFS='\t' 'NF>=4 {print "LIMIT", $1, $2, $3, $4}' "$LIMITS"
+	awk -F'\t' -v OFS='\t' 'NF>=3 {print "PAUSED", $1, $2, $3}' "$PAUSED"
+}
+
+show_table() { # show_table [name]: the report as a table, paused first, then closest to a limit
+	local rows
+	rows=$(report | awk -F'\t' -v dev="${1:-}" '
+		function sz(b,  u, i, t) { split("B KB MB GB TB", u, " "); i=1; while (b >= 1024 && i < 5) { b/=1024; i++ }
+			if (i==1) return sprintf("%d B", b)
+			t=sprintf("%.1f", b); sub(/\.0$/, "", t); return t " " u[i] }
+		$1=="USAGE" { n[$2]=1; td[$2]=$3+$4; md[$2]=$5+$6 }
+		$1=="LIMIT" { n[$2]=1; ld[$2]=$3; lm[$2]=$4; la[$2]=$5 }
+		$1=="PAUSED" { n[$2]=1; p[$2]=$3 }
+		END {
+			for (d in n) {
+				if (dev != "" && d != dev) continue
+				lim="-"; used="-"; f=0
+				if (d in ld) {
+					lim=""
+					if (ld[d] > 0) { lim=sz(ld[d]) "/day"; f=td[d]/ld[d]; used=sprintf("%d%% of day", f*100) }
+					if (lm[d] > 0) { lim=lim (lim=="" ? "" : ", ") sz(lm[d]) "/month"; g=md[d]/lm[d]
+						if (g > f || used == "-") { f=g; used=sprintf("%d%% of month", g*100) } }
+					lim=lim (la[d]=="pause" ? ", pause" : ", alert")
+				}
+				st="active"
+				if (d in p) st=(p[d]=="daily") ? "paused until midnight" : (p[d]=="monthly") ? "paused until the 1st" : "paused by hand"
+				printf "%d\t%d\t%.0f\t%s\t%-16s %9s %9s  %-32s %-13s %s\n", (d in p) ? 0 : 1, f*1000, md[d], d,
+					d, sz(td[d]), sz(md[d]), lim, used, st
+			}
+		}' | sort -t "$(printf '\t')" -k1,1n -k2,2nr -k3,3nr -k4,4 | cut -f5-)
+	if [[ -z "$rows" ]]; then
+		if [[ -n "${1:-}" ]]; then echo "$1: no data, limit or pause yet"; else echo "no data yet"; fi
+		return 0
+	fi
+	printf '%-16s %9s %9s  %-32s %-13s %s\n' DEVICE TODAY MONTH LIMIT USED STATE
+	printf '%s\n' "$rows"
+	[[ -n "${1:-}" ]] || echo "(days follow the ${TZ:-server} time zone)"
+}
+
 cmd="${1:-}"; shift || true
 case "$cmd" in
 	collect)
@@ -190,14 +263,20 @@ case "$cmd" in
 		find "$DIR" -name 'day-*.tsv' -mtime +400 -delete 2>/dev/null || true
 		;;
 	report)
-		months=$(month_totals)
-		printf 'USAGEAT\t%s\t%s\n' "$(date +%s)" "$TODAY"
-		awk -F'\t' -v OFS='\t' '
-			FILENAME==ARGV[1] { if (NF>=3) { td[$1]=$2; tu[$1]=$3; seen[$1]=1 } next }
-			NF>=3 { md[$1]=$2; mu[$1]=$3; seen[$1]=1 }
-			END { for (n in seen) printf "USAGE\t%s\t%.0f\t%.0f\t%.0f\t%.0f\n", n, td[n], tu[n], md[n], mu[n] }' "$DAYFILE" <(printf '%s\n' "$months")
-		awk -F'\t' -v OFS='\t' 'NF>=4 {print "LIMIT", $1, $2, $3, $4}' "$LIMITS"
-		awk -F'\t' -v OFS='\t' 'NF>=3 {print "PAUSED", $1, $2, $3}' "$PAUSED"
+		report
+		;;
+	show)
+		name="${1:-}"
+		[[ -z "$name" || "$name" =~ $NAME_RE ]] || { echo "invalid device name" >&2; exit 64; }
+		show_table "$name"
+		;;
+	log)
+		n="${1:-20}"; [[ "$n" =~ ^[0-9]{1,4}$ ]] || { echo "usage: vpn-usage log [N]" >&2; exit 64; }
+		if command -v journalctl >/dev/null; then
+			journalctl -t vpn-usage -n "$n" --no-pager -o short-iso -q || true
+		else
+			grep -h 'vpn-usage' /var/log/syslog /var/log/messages 2>/dev/null | tail -n "$n" || true
+		fi
 		;;
 	limit)
 		name="${1:-}"; shift || true
@@ -208,7 +287,7 @@ case "$cmd" in
 			set_line "$LIMITS" "$name" ""
 			# a pause caused by the limit goes away with it
 			tmp=$(mktemp "$DIR/.tmp.XXXXXX"); awk -F'\t' -v n="$name" '!($1==n && $2!="manual")' "$PAUSED" > "$tmp"; mv "$tmp" "$PAUSED"
-			enforce; echo "cleared the limit for $name"; exit 0
+			enforce; log_event "$name has no usage limit now"; echo "cleared the limit for $name"; exit 0
 		fi
 		daily=0 monthly=0 action=alert
 		old=$(awk -F'\t' -v n="$name" '$1==n' "$LIMITS")
@@ -230,6 +309,7 @@ case "$cmd" in
 		set_line "$LIMITS" "$name" "$(printf '%s\t%s\t%s\t%s' "$name" "$daily" "$monthly" "$action")"
 		# a stricter or looser limit takes effect now
 		tmp=$(mktemp "$DIR/.tmp.XXXXXX"); awk -F'\t' -v n="$name" '!($1==n && $2!="manual")' "$PAUSED" > "$tmp"; mv "$tmp" "$PAUSED"
+		log_event "$name limit $([[ -n "$old" ]] && echo changed || echo set): $(limit_text "$daily" "$monthly" "$action")"
 		apply_limits; enforce
 		echo "limit for $name: daily $daily, monthly $monthly, action $action"
 		;;
@@ -238,12 +318,14 @@ case "$cmd" in
 		[[ "$name" =~ $NAME_RE ]] || { echo "invalid device name" >&2; exit 64; }
 		known_device "$name" || { echo "no device named '$name' on this server" >&2; exit 66; }
 		set_line "$PAUSED" "$name" "$(printf '%s\tmanual\t%s' "$name" "$TODAY")"
-		enforce; echo "paused $name"
+		enforce; log_event "$name paused by hand"; echo "paused $name"
 		;;
 	forget)
 		name="${1:-}"
 		[[ "$name" =~ $NAME_RE ]] || { echo "invalid device name" >&2; exit 64; }
+		had=$(awk -F'\t' -v n="$name" '$1==n' "$LIMITS" "$PAUSED" | head -n 1)
 		for f in "$LIMITS" "$PAUSED" "$ALLOW"; do set_line "$f" "$name" ""; done
+		[[ -n "$had" ]] && log_event "$name removed: its limit and pause are gone"
 		enforce
 		;;
 	resume)
@@ -254,6 +336,11 @@ case "$cmd" in
 		# resumed from a limit pause: stay allowed until that day/month ends
 		[[ "$reason" == daily ]] && set_line "$ALLOW" "$name" "$(printf '%s\t%s' "$name" "$TODAY")"
 		[[ "$reason" == monthly ]] && set_line "$ALLOW" "$name" "$(printf '%s\t%s' "$name" "$MONTH")"
+		case "$reason" in
+			manual) log_event "$name resumed by hand" ;;
+			daily) log_event "$name resumed by hand; not paused again today" ;;
+			monthly) log_event "$name resumed by hand; not paused again this month" ;;
+		esac
 		enforce; echo "resumed $name"
 		;;
 	*)

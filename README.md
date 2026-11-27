@@ -122,7 +122,7 @@ Run `vpn-sync --help` for all options.
 | `server/bin/vpn-add-client`, `vpn-remove-client` | Add/remove devices on both VPNs by driving the Nyr menus with `expect`. All names are validated first. Removed files are kept in `/root/vpn-sync-backups/`. |
 | `server/bin/vpn-export-profiles` | Streams all client profiles as a tarball. |
 | `server/bin/vpn-status` | Connected devices (OpenVPN status file and log, `wg show` handshakes) and service state. |
-| `server/bin/vpn-usage` | Per-device data per day in `/var/lib/vpn-sync/usage/` (systemd timer, every minute), limits, and pausing via a `VPNSYNC-BLOCK` chain first in `FORWARD` (IPv4 and IPv6). |
+| `server/bin/vpn-usage` | Per-device data per day in `/var/lib/vpn-sync/usage/` (systemd timer, every minute), limits, and pausing via a `VPNSYNC-BLOCK` chain first in `FORWARD` (IPv4 and IPv6). On the server, `sudo vpn-usage show` prints a table, and `sudo vpn-usage log` lists pauses, resumes and limit changes (also in `journalctl -t vpn-usage`). |
 | `server/bin/vpn-service` | Start/stop/restart the VPN services, or reboot. Stopped services start again at boot. |
 
 Local state lives in `~/.config/vpn-sync/`: one `<server>.conf` per server (see
