@@ -116,6 +116,14 @@ final class Model: ObservableObject {
     @Published var confirmService: ServiceAction?
     /// Latest usage report per server (Usage.swift).
     @Published var usageByServer: [String: UsageState] = [:]
+    /// Banners for usage limits (warning level and 100%), separate from connect/disconnect banners.
+    @Published var limitAlerts = UserDefaults.standard.object(forKey: "limitAlerts") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(limitAlerts, forKey: "limitAlerts"); if limitAlerts { Notifier.shared.requestPermission() } }
+    }
+    /// Early warning at this percentage of a limit; 0 turns it off. Read elsewhere as usageWarnAt.
+    @Published var warnAt = usageWarnAt {
+        didSet { UserDefaults.standard.set(warnAt, forKey: "usageWarnAt") }
+    }
     /// Limit events per server (reached 80%, paused, resumed…), newest first, this run only.
     @Published var usageEvents: [String: [UsageEvent]] = [:]
     @Published var limitTarget: LimitTarget?
@@ -1163,15 +1171,15 @@ struct ContentView: View {
         return rows.filter { names.contains($0.name) }
     }
 
-    /// "2 usage limits, 1 paused, 1 at 80% or more" over the device list, with a filter.
+    /// "2 usage limits, 1 paused, 1 at 80% or more" (the warning level) over the device list, with a filter.
     @ViewBuilder private var limitBar: some View {
         if let u = m.usage, !limitNames.isEmpty, !m.selecting {
             let near = u.limits.filter { n, l in
-                u.paused[n] == nil && (l.tightest(u.usage[n] ?? DeviceUsage())?.fraction ?? 0) >= 0.8
+                u.paused[n] == nil && (l.tightest(u.usage[n] ?? DeviceUsage())?.fraction ?? 0) >= (usageWarnFraction ?? .infinity)
             }.count
             let parts = [u.limits.isEmpty ? nil : "\(u.limits.count) usage limit\(u.limits.count == 1 ? "" : "s")",
                          u.paused.isEmpty ? nil : "\(u.paused.count) paused",
-                         near == 0 ? nil : "\(near) at 80% or more"].compactMap { $0 }
+                         near == 0 ? nil : "\(near) at \(m.warnAt)% or more"].compactMap { $0 }
             HStack(spacing: 8) {
                 LucideIcon("gauge", size: 13)
                     .foregroundStyle(u.paused.isEmpty && near == 0 ? Color.secondary : Color.orange)

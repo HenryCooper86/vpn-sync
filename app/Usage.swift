@@ -1,8 +1,14 @@
 // Data usage, limits and pausing. Each server counts every device's traffic per day (vpn-usage,
 // every minute) and reports it in the live stream as USAGEAT/USAGE/LIMIT/PAUSED lines. A limit
 // either only alerts, or alerts and pauses the device: its traffic is blocked on the server while
-// it stays connected. Alerts fire at 80% and 100%, once per device, limit and period.
+// it stays connected. Alerts fire at the warning level (80% unless changed in Settings) and at
+// 100%, once per device, limit and period.
 import SwiftUI
+
+/// The early-warning level in percent (Settings → Limits); 0 turns it off.
+var usageWarnAt: Int { UserDefaults.standard.object(forKey: "usageWarnAt") as? Int ?? 80 }
+/// The warning level as a fraction, or nil when it's off.
+var usageWarnFraction: Double? { usageWarnAt > 0 ? Double(usageWarnAt) / 100 : nil }
 
 struct DeviceUsage: Equatable {
     var todayDown: Int64 = 0, todayUp: Int64 = 0, monthDown: Int64 = 0, monthUp: Int64 = 0
@@ -80,7 +86,7 @@ struct UsageEvent: Identifiable, Equatable {
                     let detail = "\(formatBytes(now)) of \(formatBytes(cap)) \(what == "daily" ? "today" : "this month")"
                     if a < 1, b >= 1 {
                         if !nl.pauses { add(n, .reached, "reached its \(what) limit", detail + ", alerts only") }
-                    } else if a < 0.8, b >= 0.8 {
+                    } else if let w = usageWarnFraction, a < w, b >= w {
                         add(n, .nearing, "used \(Int(b * 100))% of its \(what) limit", detail + (nl.pauses ? ", pauses at 100%" : ""))
                     }
                 }
@@ -171,11 +177,15 @@ extension Model {
     }
 
     /// Fetches the report now (after a change, or when live monitoring is off).
-    func refreshUsage(_ s: String? = nil) async {
+    /// Returns false when the server didn't answer or has no usage tracking yet.
+    @discardableResult
+    func refreshUsage(_ s: String? = nil) async -> Bool {
         let s = s ?? server
-        guard !s.isEmpty else { return }
+        guard !s.isEmpty else { return false }
         let (code, out) = await runCLI(["usage", s, "--raw"], quiet: true)
-        if code == 0, let u = UsageState.parse(out) { setUsage(u, server: s) }
+        guard code == 0, let u = UsageState.parse(out) else { return false }
+        setUsage(u, server: s)
+        return true
     }
 
     func setPaused(_ name: String, _ pause: Bool, server: String? = nil) async {
@@ -218,14 +228,14 @@ extension Model {
             let used = u.usage[name] ?? DeviceUsage()
             for (period, cap, value) in [("day", limit.daily, used.today), ("month", limit.monthly, used.month)] where cap > 0 {
                 let pct = Double(value) / Double(cap)
-                guard pct >= 0.8 else { continue }
-                let level = pct >= 1 ? 100 : 80
+                guard pct >= (usageWarnFraction ?? 1) else { continue }
+                let level = pct >= 1 ? 100 : usageWarnAt
                 let key = "\(s)/\(name)/\(period == "day" ? u.day : month)/\(period)/\(level)"
                 guard !sent.contains(key) else { continue }
                 sent.append(key); changed = true
-                // 100% replaces the 80% alert of the same period
-                if level == 100 { sent.append(key.replacingOccurrences(of: "/100", with: "/80")) }
-                guard notify else { continue }
+                // 100% replaces the warning of the same period
+                if level == 100, usageWarnAt > 0 { sent.append(key.replacingOccurrences(of: "/100", with: "/\(usageWarnAt)")) }
+                guard limitAlerts else { continue }
                 let what = period == "day" ? "daily" : "monthly"
                 let span = period == "day" ? "today" : "this month"
                 let title: String, body: String
@@ -283,6 +293,8 @@ struct LimitMenuItems: View {
     let server: String
     let name: String
     var beforeEdit: () -> Void = {}
+    /// Opens the limit sheet somewhere else (Settings) instead of in the main window.
+    var onEdit: ((LimitTarget) -> Void)? = nil
     var body: some View {
         let u = m.usageByServer[server]
         if u?.paused[name] != nil {
@@ -291,8 +303,8 @@ struct LimitMenuItems: View {
             Button("Pause Internet") { Task { await m.setPaused(name, true, server: server) } }.disabled(m.busy)
         }
         Button(u?.limits[name] == nil ? "Set Usage Limit…" : "Edit Usage Limit…") {
-            beforeEdit()
-            m.limitTarget = LimitTarget(server: server, device: name)
+            let t = LimitTarget(server: server, device: name)
+            if let onEdit { onEdit(t) } else { beforeEdit(); m.limitTarget = t }
         }
         if u?.limits[name] != nil {
             Button("Remove Limit") { Task { _ = await m.saveLimit(name, server: server, nil) } }.disabled(m.busy)
@@ -369,13 +381,13 @@ struct PanelLimits: View {
     }
 }
 
-/// A small capsule meter: accent below 80%, orange from 80%, red at 100%.
+/// A small capsule meter: accent below the warning level, orange from it, red at 100%.
 struct UsageMeter: View {
     let fraction: Double
     var width: CGFloat = 54
     var body: some View {
         let f = max(0, min(1, fraction))
-        let color: Color = fraction >= 1 ? .red : fraction >= 0.8 ? .orange : .accentColor
+        let color: Color = fraction >= 1 ? .red : fraction >= (usageWarnFraction ?? 1) ? .orange : .accentColor
         ZStack(alignment: .leading) {
             Capsule().fill(.primary.opacity(0.12))
             Capsule().fill(color).frame(width: max(f > 0 ? 4 : 0, width * f))
@@ -395,6 +407,11 @@ struct LimitSheet: View {
     let target: LimitTarget
 
     enum Unit: String, CaseIterable, Identifiable { case mb = "MB", gb = "GB"; var id: String { rawValue } }
+
+    private var alertText: String {
+        guard m.limitAlerts else { return "Notifications for limits are off (Settings → Limits)." }
+        return m.warnAt > 0 ? "You're notified at \(m.warnAt)% and 100%." : "You're notified at 100%."
+    }
 
     @State private var dailyOn = false
     @State private var dailyValue = "2"
@@ -446,7 +463,7 @@ struct LimitSheet: View {
                 }
                 .pickerStyle(.radioGroup)
                 .labelsHidden()
-                Text("You're notified at 80% and 100%. A paused device stays connected but gets no internet until midnight (daily) or the 1st (monthly); you can resume it early from its menu. Days follow this Mac's time zone.")
+                Text("\(alertText) A paused device stays connected but gets no internet until midnight (daily) or the 1st (monthly); you can resume it early from its menu. Days follow this Mac's time zone.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

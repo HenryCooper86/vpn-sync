@@ -32,14 +32,17 @@ A macOS app and command-line tool for running your own OpenVPN + WireGuard serve
 - **Control services:** start, stop or restart OpenVPN and WireGuard, or reboot the server.
 - **Usage limits:** each server counts every device's data per day (every minute, so it keeps
   counting while the app is closed). Set a daily and/or monthly limit per device that either
-  notifies you (at 80% and 100%) or also pauses the device. **Pause Internet** blocks a
+  notifies you (at 80% and 100%; the warning level can be changed) or also pauses the device. **Pause Internet** blocks a
   device's traffic on the server with a firewall rule: it stays connected, nothing is revoked,
   and **Resume Internet** undoes it. A limit pause lifts at midnight (daily) or on the 1st
   (monthly); days follow the Mac's time zone.
   The Devices tab shows each device's usage and limit, says why a paused device is paused
   with a **Resume** button, and has a summary above the list that can filter it to limited
   and paused devices. The menu bar panel and the Traffic tab list limited and paused devices
-  with the same actions; the Traffic tab also shows every device's data this month. The Activity tab logs
+  with the same actions; the Traffic tab also shows every device's data this month.
+  **Settings → Limits** turns limit notifications on or off (separately from connect
+  banners), sets the warning level (50–90% or off), and lists every limit and pause on
+  every server, with **Add a Limit** for each. The Activity tab logs
   limit events (80% used, limit reached, paused, resumed, limit set or removed) alongside
   connects and disconnects while VPN Sync is running.
 - **Menu bar:** a shield with the number of devices online across all servers; click it to
