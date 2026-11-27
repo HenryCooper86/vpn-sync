@@ -176,7 +176,7 @@ device_addresses() { # all VPN addresses (v4 and v6) of a device, one per line
 	[[ -f /etc/openvpn/server/ipp.txt ]] && awk -F, -v n="$n" '$1==n {print $2; if ($3!="") print $3}' /etc/openvpn/server/ipp.txt
 	[[ -n "$OVPN_STATUS" ]] && awk -F, -v n="$n" '$1=="CLIENT_LIST" && $2==n {print $4; if ($5!="") print $5}' "$OVPN_STATUS"
 	# IKEv2 addresses are leased per connection: block the current ones (re-checked every minute)
-	ikev2_sas | awk -F'\t' -v n="$n" '$1==n && $3!="-" {print $3}'
+	ikev2_sas | awk -F'\t' -v n="$n" '$1==n && $7!="-" {k=split($7, a, ","); for (i=1; i<=k; i++) print a[i]}'
 	return 0
 }
 

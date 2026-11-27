@@ -53,10 +53,11 @@ ikev2_collect() {
 }
 
 # ikev2_sas: one line per connected IKEv2 tunnel (tab separated):
-#   <name> <real ip> <vpn ip> <bytes rx> <bytes tx> <added epoch>
+#   <name> <real ip> <vpn ip> <bytes rx> <bytes tx> <added epoch> <all vpn ips, comma separated>
+# (a device can lease an IPv4 and an IPv6 address; pausing blocks both)
 # from "ipsec trafficstatus" lines like
 #   #3: "ikev2-cp"[1] 203.0.113.5, type=ESP, add_time=1700000000, inBytes=10, outBytes=20,
-#       maxBytes=2^63B, id='O=IKEv2 VPN, CN=phone', lease=192.168.43.10/32
+#       maxBytes=2^63B, id='CN=phone, O=IKEv2 VPN', lease=192.168.43.10/32,fddd:500:500:500::1000/128
 # (rx = from the device, tx = to it, as for OpenVPN and WireGuard)
 ikev2_sas() {
 	have_ikev2 && command -v ipsec >/dev/null || return 0
@@ -65,8 +66,14 @@ ikev2_sas() {
 		/ikev2-cp/ {
 			name = val("CN"); if (name == "") next
 			ip = ""; if (match($0, /\][ ]+[0-9A-Fa-f.:]+,/)) { ip = substr($0, RSTART + 1, RLENGTH - 2); gsub(/ /, "", ip) }
-			lease = val("lease"); sub(/\/.*/, "", lease)
-			printf "%s\t%s\t%s\t%.0f\t%.0f\t%.0f\n", name, (ip == "" ? "-" : ip), (lease == "" ? "-" : lease), val("inBytes"), val("outBytes"), val("add_time")
+			all = ""; lease = ""
+			if (match($0, /lease=[0-9A-Fa-f.:\/,]+/)) {
+				k = split(substr($0, RSTART + 6, RLENGTH - 6), L, ",")
+				for (i = 1; i <= k; i++) { a = L[i]; sub(/\/.*/, "", a); if (a == "") continue
+					all = all (all == "" ? "" : ",") a; if (lease == "" && a ~ /\./) lease = a }
+				if (lease == "") lease = L[1]; sub(/\/.*/, "", lease)
+			}
+			printf "%s\t%s\t%s\t%.0f\t%.0f\t%.0f\t%s\n", name, (ip == "" ? "-" : ip), (lease == "" ? "-" : lease), val("inBytes"), val("outBytes"), val("add_time"), (all == "" ? "-" : all)
 		}'
 }
 
