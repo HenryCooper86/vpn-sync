@@ -203,6 +203,76 @@ final class ServerLive: ObservableObject, Identifiable {
         }
     }
 
+    // MARK: check (like the Mac's Check: what changed, without changing anything)
+
+    struct CheckResult: Equatable {
+        var time = Date()
+        var ip: String?
+        /// Profiles on the server that still use an old address (0 = up to date)
+        var staleFiles = 0
+        var firstCheck = false
+        var added: [String] = []
+        var removed: [String] = []
+        var updated: [(name: String, vpns: [String])] = []
+        var changed: Bool { staleFiles > 0 || !added.isEmpty || !removed.isEmpty || !updated.isEmpty }
+        static func == (a: CheckResult, b: CheckResult) -> Bool { a.time == b.time }
+    }
+    @Published var lastCheck: CheckResult?
+    @Published var checking = false
+    @Published var checkError: String?
+
+    private var hashKey: String { "profileHashes.\(name)" }
+
+    /// Asks the server whether its profiles use its current IP, and compares each device's profile
+    /// fingerprints with the last check: added, removed and changed devices. Remembers this check.
+    func check() async throws {
+        guard let store else { return }
+        checking = true; checkError = nil; defer { checking = false }
+        var r = CheckResult()
+        let out = try await store.tool(name, "/usr/local/sbin/vpn-endpoint-sync --dry-run", timeout: 60)
+        for l in out.split(separator: "\n").map(String.init) {
+            if l.hasPrefix("ENDPOINT=") { r.ip = String(l.dropFirst(9)) }
+            if l.hasPrefix("public IP is "), let n = l.split(separator: ";").last?.split(separator: " ").first.flatMap({ Int($0) }) {
+                r.staleFiles = n
+            }
+        }
+        if let ip = r.ip { store.noteIP(name, ip) }
+        // fingerprints now: device → VPN → hash
+        let h = try await store.tool(name, "/usr/local/sbin/vpn-export-profiles --hashes", timeout: 30)
+        var now: [String: [String: String]] = [:]
+        for l in h.split(separator: "\n") {
+            let f = l.split(separator: "\t").map(String.init)
+            guard f.count == 4, f[0] == "FILE" else { continue }
+            now[f[1], default: [:]][f[2]] = f[3]
+        }
+        let label = ["openvpn": "OpenVPN", "wireguard": "WireGuard", "ikev2": "IKEv2"]
+        if let data = UserDefaults.standard.data(forKey: hashKey),
+           let before = try? JSONDecoder().decode([String: [String: String]].self, from: data) {
+            r.added = now.keys.filter { before[$0] == nil }.sorted(by: Self.order)
+            r.removed = before.keys.filter { now[$0] == nil }.sorted(by: Self.order)
+            for n in now.keys.sorted(by: Self.order) {
+                guard let b = before[n], let a = now[n] else { continue }
+                let vpns = Set(a.keys).union(b.keys).filter { a[$0] != b[$0] }.sorted().map { label[$0] ?? $0 }
+                if !vpns.isEmpty { r.updated.append((n, vpns)) }
+            }
+        } else {
+            r.firstCheck = true
+        }
+        if let data = try? JSONEncoder().encode(now) { UserDefaults.standard.set(data, forKey: hashKey) }
+        lastCheck = r
+        if !r.added.isEmpty || !r.removed.isEmpty { await refreshDevices() }
+    }
+
+    /// The server rewrites its profiles for its current IP (the server half of the Mac's Sync).
+    func updateProfiles() async throws -> String {
+        guard let store else { return "" }
+        let out = try await store.tool(name, "/usr/local/sbin/vpn-endpoint-sync", timeout: 180)
+        try await check()
+        return out.split(separator: "\n").filter { !$0.hasPrefix("ENDPOINT=") }.joined(separator: " ")
+    }
+
+    private static func order(_ a: String, _ b: String) -> Bool { a.localizedStandardCompare(b) == .orderedAscending }
+
     /// The device list (profiles on the server).
     func refreshDevices() async {
         guard let out = try? await store?.tool(name, "/usr/local/sbin/vpn-export-profiles --list", timeout: 30) else { return }

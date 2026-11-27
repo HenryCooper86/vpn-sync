@@ -39,7 +39,7 @@ It can also set up a fresh server for you.
 | **IP changes handled** | Each server rewrites its own profiles when its address changes; the Mac pulls fresh copies, fixes OpenVPN Connect and, with a read-only Lightsail key, finds a stopped-and-started server's new IP on its own. |
 | **Start and stop servers** | Stop a Lightsail server you don't need and start it again from the Mac, the menu bar or the iPhone; VPN Sync shows it as stopped instead of unreachable, and after a start it finds the new IP and resyncs. |
 | **Install or adopt** | Install OpenVPN and/or WireGuard (Nyr) and optionally IPsec/IKEv2 (hwdsl2, IKEv2-only) with your choice of ports and DNS, or keep what's already there. |
-| **iPhone app** | The same servers on your phone over SSH, without the Mac. |
+| **iPhone app** | The same servers on your phone over SSH, without the Mac. Check Profiles says whether the profiles use the server's current IP (and updates them if not) and which devices were added, removed or given new profiles since the last check. |
 | **Command line** | Everything the apps do, as `vpn-sync` on the Mac and small tools on each server. |
 
 ## Screenshots

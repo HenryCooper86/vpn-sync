@@ -16,6 +16,7 @@ struct ServerView: View {
     @State private var selection: Set<String> = []
     @State private var removing: [String]?
     @State private var powerHelp = false
+    @State private var confirmUpdate = false
 
     var body: some View {
         ScrollView {
@@ -23,6 +24,7 @@ struct ServerView: View {
                 header
                 stoppedBanner
                 servicesRow
+                checkCard
                 portsCard
                 Picker("Section", selection: $tab) {
                     ForEach(Tab.allCases, id: \.self) { t in
@@ -58,6 +60,8 @@ struct ServerView: View {
                     Button("Select Devices to Remove…", systemImage: "checkmark.circle") { tab = .devices; selecting = true }
                     Divider()
                     Button("Refresh", systemImage: "arrow.clockwise") { live.restart() }
+                    Button("Check Profiles", systemImage: "checklist") { runCheck() }
+                        .disabled(live.checking)
                     Divider()
                     Button("Restart All VPNs…", systemImage: "arrow.triangle.2.circlepath") { confirm = ServiceAction(server: name, vpn: "all", action: "restart") }
                     Button("Reboot Server…", systemImage: "power", role: .destructive) { confirm = ServiceAction(server: name, vpn: "reboot", action: "reboot") }
@@ -120,6 +124,13 @@ struct ServerView: View {
             Text(powerHelpText)
         }
         .onAppear { openRequestedTab() }
+        // like the Mac at launch: check once when the server is first opened
+        .task { if live.lastCheck == nil && !live.checking && live.checkError == nil { runCheck(quiet: true) } }
+        .confirmationDialog("Update \(name)'s profiles?", isPresented: $confirmUpdate, titleVisibility: .visible) {
+            Button("Update Profiles") { updateProfiles() }
+        } message: {
+            Text("The server rewrites its profiles for \(live.lastCheck?.ip ?? "its current IP")\(live.hasIPsec ? " and restarts IPsec with a new certificate" : ""). Every device then needs its new profile: open it here and share it, or scan its QR code.")
+        }
         .task { await store.refreshInstance(name) }
     }
 
@@ -177,6 +188,83 @@ struct ServerView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// The result of Check Profiles: up to date, or what changed since the last check.
+    @ViewBuilder private var checkCard: some View {
+        if live.checking && live.lastCheck == nil {
+            HStack(spacing: 10) { ProgressView(); Text("Checking profiles…").foregroundStyle(.secondary) }
+                .frame(maxWidth: .infinity, alignment: .leading).card(18, padding: 14)
+        } else if let e = live.checkError {
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Couldn't check the profiles", systemImage: "exclamationmark.triangle").font(.subheadline.weight(.semibold))
+                Text(e).font(.footnote).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).card(18, padding: 14)
+        } else if let c = live.lastCheck {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label(c.changed ? (c.staleFiles > 0 ? "Profiles need updating" : "Changed since your last check") : "Profiles up to date",
+                          systemImage: c.changed ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(c.changed ? .orange : Palette.online)
+                    Spacer()
+                    if live.checking { ProgressView().controlSize(.small) }
+                    else {
+                        Button { runCheck() } label: { Image(systemName: "arrow.clockwise") }
+                            .buttonStyle(.borderless).accessibilityLabel("Check again")
+                    }
+                }
+                if c.staleFiles > 0 {
+                    Text("\(c.staleFiles) profile file\(c.staleFiles == 1 ? "" : "s") on the server still use an old address; the server is now \(c.ip ?? "on a new IP").")
+                        .font(.footnote)
+                    Button("Update Profiles…", systemImage: "arrow.triangle.2.circlepath") { confirmUpdate = true }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
+                }
+                if !c.added.isEmpty { line("Added", c.added.joined(separator: ", ")) }
+                if !c.removed.isEmpty { line("Removed", c.removed.joined(separator: ", ")) }
+                if !c.updated.isEmpty {
+                    line("New profiles", c.updated.map { "\($0.name) (\($0.vpns.joined(separator: ", ")))" }.joined(separator: ", "))
+                    Text("Those devices need their new profile: open the device and share it, or scan its QR code.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if !c.changed {
+                    Text(c.firstCheck ? "Every profile uses \(c.ip ?? "the server's address"). From the next check on, devices added, removed or given new profiles are listed here."
+                                      : "Every profile uses \(c.ip ?? "the server's address"); no device was added, removed or given a new profile since your last check.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Text("Checked \(c.time.formatted(date: .omitted, time: .shortened))").font(.caption2).foregroundStyle(.tertiary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card(18, padding: 14)
+        }
+    }
+
+    private func line(_ title: String, _ value: String) -> some View {
+        (Text("\(title): ").fontWeight(.semibold) + Text(value)).font(.footnote)
+    }
+
+    private func runCheck(quiet: Bool = false) {
+        Task {
+            do { try await live.check() }
+            catch {
+                let msg = error.localizedDescription
+                live.checkError = msg.contains("--hashes") || msg.contains("usage: vpn-export-profiles")
+                    ? "\(name)'s server tools are older than this app. On the Mac, open Set Up… for \(name) to update them."
+                    : msg
+            }
+        }
+    }
+
+    private func updateProfiles() {
+        busy = "Updating profiles…"
+        Task {
+            defer { busy = nil }
+            do {
+                let out = try await live.updateProfiles()
+                store.show(out.isEmpty ? "Profiles updated." : out)
+            } catch { store.show(error.localizedDescription) }
         }
     }
 

@@ -6,6 +6,9 @@
 #   vpn-export-profiles --list          one line per device (tab separated):
 #                                       DEVICE <name> <openvpn 0|1> <wireguard 0|1> <ikev2 0|1>
 #   vpn-export-profiles --device NAME   that device's files as an uncompressed tar (same layout)
+#   vpn-export-profiles --hashes        a fingerprint of each device's profiles, so an app can tell
+#                                       what changed since it last looked (no file contents):
+#                                       FILE <name> <openvpn|wireguard|ikev2> <sha256, first 16>
 set -euo pipefail
 # shellcheck source=../lib/common.sh
 . "${VPN_SYNC_LIB:-/usr/local/lib/vpn-sync}/common.sh"
@@ -14,10 +17,11 @@ require_root
 mode=all device=""
 case "${1:-}" in
 	--list) mode=list ;;
+	--hashes) mode=hashes ;;
 	--device) mode=device; device="${2:-}"
 		[[ "$device" =~ $NAME_RE ]] || { echo "invalid device name" >&2; exit 64; } ;;
 	"") ;;
-	*) echo "usage: vpn-export-profiles [--list | --device NAME]" >&2; exit 64 ;;
+	*) echo "usage: vpn-export-profiles [--list | --hashes | --device NAME]" >&2; exit 64 ;;
 esac
 
 if [[ $mode == list ]]; then
@@ -27,6 +31,14 @@ if [[ $mode == list ]]; then
 		while IFS= read -r f; do n=${f##*/}; echo "${n%.mobileconfig}	i"; done < <(ikev2_profiles)
 	} | awk -F'\t' '{ seen[$1]=1; has[$1, $2]=1 }
 		END { for (n in seen) printf "DEVICE\t%s\t%d\t%d\t%d\n", n, has[n, "o"], has[n, "w"], has[n, "i"] }' | sort
+	exit 0
+fi
+
+if [[ $mode == hashes ]]; then
+	h() { sha256sum "$1" | cut -c1-16; }
+	while IFS= read -r f; do n=${f##*/}; printf 'FILE\t%s\topenvpn\t%s\n' "${n%.ovpn}" "$(h "$f")"; done < <(ovpn_profiles)
+	while IFS= read -r f; do n=${f##*/}; printf 'FILE\t%s\twireguard\t%s\n' "${n%.conf}" "$(h "$f")"; done < <(wg_profiles)
+	while IFS= read -r f; do n=${f##*/}; printf 'FILE\t%s\tikev2\t%s\n' "${n%.mobileconfig}" "$(h "$f")"; done < <(ikev2_profiles)
 	exit 0
 fi
 

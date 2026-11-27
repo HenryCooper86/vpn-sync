@@ -181,11 +181,29 @@ final class Store: ObservableObject {
         }
     }
 
+    /// The server reported its current public IP: connect there next time.
+    func noteIP(_ name: String, _ ip: String) {
+        guard let i = servers.firstIndex(where: { $0.name == name }), servers[i].lastIP != ip else { return }
+        servers[i].lastIP = ip
+        save()
+    }
+
     /// Demo answers: device list and usage from DemoData, everything else just succeeds.
     private func demoRun(_ name: String, _ command: String) -> CommandResult {
         var lines: [String] = []
+        let ip = DemoData.server(name)?.ip ?? "198.51.100.1"
         if command.contains("vpn-export-profiles --list") { lines = DemoData.deviceList(name) }
         else if command.contains("vpn-usage report") { lines = DemoData.usage(name) }
+        else if command.contains("vpn-endpoint-sync") { lines = ["up to date: all configs use \(ip)", "ENDPOINT=\(ip)"] }
+        else if command.contains("vpn-export-profiles --hashes") {
+            // the first device's WireGuard profile looks changed on every other check
+            let flip = UserDefaults.standard.bool(forKey: "demoFlip"); UserDefaults.standard.set(!flip, forKey: "demoFlip")
+            lines = DemoData.deviceList(name).enumerated().flatMap { i, l -> [String] in
+                let n = l.split(separator: "\t").dropFirst().first.map(String.init) ?? "device"
+                return ["FILE\t\(n)\topenvpn\to-\(n)",
+                        "FILE\t\(n)\twireguard\t\(i == 0 && flip ? "changed" : "same")\(n)"]
+            }
+        }
         return CommandResult(code: 0, stdout: Data(lines.joined(separator: "\n").utf8), stderr: "")
     }
 
