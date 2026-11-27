@@ -13,6 +13,14 @@ struct UsageLimit: Equatable {
     var daily: Int64 = 0, monthly: Int64 = 0
     var pauses = false            // false: alert only
 
+    /// "1.5 GB a day and 20 GB a month, pauses at 100%"
+    var summary: String {
+        var parts: [String] = []
+        if daily > 0 { parts.append("\(formatBytes(daily)) a day") }
+        if monthly > 0 { parts.append("\(formatBytes(monthly)) a month") }
+        return parts.joined(separator: " and ") + (pauses ? ", pauses at 100%" : ", alerts only")
+    }
+
     /// The limit closest to being reached: fraction used and "86% of 1.5 GB a day".
     func tightest(_ u: DeviceUsage) -> (fraction: Double, text: String)? {
         var best: (fraction: Double, text: String)?
@@ -36,6 +44,66 @@ struct PauseInfo: Equatable {
         case "monthly": return "Paused: monthly limit reached. Back on the 1st."
         default: return "Paused by you"
         }
+    }
+}
+
+/// Something that happened to a device's limit or pause, for the Activity list.
+struct UsageEvent: Identifiable, Equatable {
+    enum Kind: Equatable { case nearing, reached, paused, resumed, limitSet, limitRemoved }
+    let id = UUID()
+    let time: Date
+    let device: String
+    let kind: Kind
+    let text: String              // "used 80% of its daily limit"
+    let detail: String            // "1.2 GB of 1.5 GB today"
+
+    /// What changed between two reports from the same server. The first report after launch
+    /// has nothing to compare with, so it adds no events.
+    static func changes(from old: UsageState, to new: UsageState) -> [UsageEvent] {
+        var out: [UsageEvent] = []
+        func add(_ n: String, _ k: Kind, _ text: String, _ detail: String = "") {
+            out.append(UsageEvent(time: new.time, device: n, kind: k, text: text, detail: detail))
+        }
+        let sameDay = old.day == new.day, sameMonth = old.day.prefix(7) == new.day.prefix(7)
+        let names = Set(old.limits.keys).union(new.limits.keys).union(old.paused.keys).union(new.paused.keys)
+        for n in names.sorted(by: { $0.localizedStandardCompare($1) == .orderedAscending }) {
+            let ol = old.limits[n], nl = new.limits[n], op = old.paused[n], np = new.paused[n]
+            let ou = old.usage[n] ?? DeviceUsage(), nu = new.usage[n] ?? DeviceUsage()
+            if ol != nl {
+                if let nl { add(n, .limitSet, ol == nil ? "got a usage limit" : "has a new usage limit", nl.summary) }
+                else { add(n, .limitRemoved, "has no usage limit now") }
+            } else if let nl {
+                // crossings of an unchanged limit; a pausing limit's 100% shows as the pause below
+                for (what, cap, was, now, same) in [("daily", nl.daily, ou.today, nu.today, sameDay),
+                                                    ("monthly", nl.monthly, ou.month, nu.month, sameMonth)] where cap > 0 {
+                    let a = same ? Double(was) / Double(cap) : 0, b = Double(now) / Double(cap)
+                    let detail = "\(formatBytes(now)) of \(formatBytes(cap)) \(what == "daily" ? "today" : "this month")"
+                    if a < 1, b >= 1 {
+                        if !nl.pauses { add(n, .reached, "reached its \(what) limit", detail + ", alerts only") }
+                    } else if a < 0.8, b >= 0.8 {
+                        add(n, .nearing, "used \(Int(b * 100))% of its \(what) limit", detail + (nl.pauses ? ", pauses at 100%" : ""))
+                    }
+                }
+            }
+            if op == nil, let np {
+                switch np.reason {
+                case "daily":
+                    add(n, .paused, "was paused at its daily limit",
+                        "\(formatBytes(nu.today)) today, back at midnight")
+                case "monthly":
+                    add(n, .paused, "was paused at its monthly limit",
+                        "\(formatBytes(nu.month)) this month, back on the 1st")
+                default:
+                    add(n, .paused, "was paused by you", "stays connected, no internet")
+                }
+            } else if let op, np == nil {
+                let lifted = (op.reason == "daily" && !sameDay) || (op.reason == "monthly" && !sameMonth)
+                add(n, .resumed, lifted ? "has internet again" : "was resumed",
+                    lifted ? (op.reason == "daily" ? "a new day started" : "a new month started")
+                           : op.reason == "manual" ? "" : "won't be paused again \(op.reason == "daily" ? "today" : "this month")")
+            }
+        }
+        return out
     }
 }
 
@@ -81,12 +149,24 @@ extension Model {
     func deviceUsage(_ name: String) -> DeviceUsage? { usage?.usage[name] }
     func usageLimit(_ name: String) -> UsageLimit? { usage?.limits[name] }
     func pauseInfo(_ name: String) -> PauseInfo? { usage?.paused[name] }
+    /// The selected server's limit events, newest first.
+    var limitEvents: [UsageEvent] { usageEvents[server] ?? [] }
+    /// Connects, disconnects and limit events on the selected server.
+    var activityCount: Int { events.count + limitEvents.count }
 
     /// A new report arrived (from the live stream or after a change).
     func setUsage(_ u: UsageState, server s: String) {
         let old = usageByServer[s]
         guard old != u else { return }
         usageByServer[s] = u
+        if let old {
+            let new = UsageEvent.changes(from: old, to: u)
+            if !new.isEmpty {
+                var list = new.reversed() + (usageEvents[s] ?? [])
+                if list.count > 200 { list.removeLast(list.count - 200) }
+                usageEvents[s] = list
+            }
+        }
         checkUsageAlerts(u, server: s, previous: old)
     }
 

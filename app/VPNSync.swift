@@ -116,6 +116,8 @@ final class Model: ObservableObject {
     @Published var confirmService: ServiceAction?
     /// Latest usage report per server (Usage.swift).
     @Published var usageByServer: [String: UsageState] = [:]
+    /// Limit events per server (reached 80%, paused, resumed…), newest first, this run only.
+    @Published var usageEvents: [String: [UsageEvent]] = [:]
     @Published var limitTarget: LimitTarget?
     /// The Desktop read is taking long: probably waiting for the user to allow access.
     @Published var desktopWaiting = false
@@ -1118,7 +1120,7 @@ struct ContentView: View {
                 Picker("Section", selection: $tab) {
                     Text("Devices").tag(MainTab.devices)
                     Text("Traffic").tag(MainTab.traffic)
-                    Text(m.events.isEmpty ? "Activity" : "Activity (\(m.events.count))").tag(MainTab.activity)
+                    Text(m.activityCount == 0 ? "Activity" : "Activity (\(m.activityCount))").tag(MainTab.activity)
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
                 Spacer()
@@ -1188,8 +1190,8 @@ struct ContentView: View {
             Button { withAnimation(.snappy) { showActivity.toggle() } } label: {
                 HStack(spacing: 6) {
                     Text("Activity").font(.system(size: 16, weight: .semibold, design: .rounded))
-                    if !m.events.isEmpty {
-                        Text("\(m.events.count)").font(.system(.caption, design: .rounded)).foregroundStyle(.secondary)
+                    if m.activityCount > 0 {
+                        Text("\(m.activityCount)").font(.system(.caption, design: .rounded)).foregroundStyle(.secondary)
                     }
                     LucideIcon("chevron-right")
                         .font(.system(size: 10, weight: .bold))

@@ -716,9 +716,20 @@ struct ActivityView: View {
     @EnvironmentObject var m: Model
     @Environment(\.theme) private var t
     var tall = false
+
+    /// A connect/disconnect or a limit event, merged into one list by time.
+    private enum Item: Identifiable {
+        case live(LiveEvent), usage(UsageEvent)
+        var id: UUID { switch self { case .live(let e): return e.id; case .usage(let e): return e.id } }
+        var time: Date { switch self { case .live(let e): return e.time; case .usage(let e): return e.time } }
+    }
+    private var items: [Item] {
+        (m.events.map(Item.live) + m.limitEvents.map(Item.usage)).sorted { $0.time > $1.time }
+    }
+
     var body: some View {
-        if m.events.isEmpty {
-            Text(m.monitoring ? "Connects and disconnects show up here while VPN Sync is running." : "Turn on Live to see connects and disconnects.")
+        if m.activityCount == 0 {
+            Text(m.monitoring ? "Connects, disconnects and usage-limit alerts show up here while VPN Sync is running." : "Turn on Live to see connects, disconnects and usage-limit alerts.")
                 .font(.callout).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
@@ -726,23 +737,11 @@ struct ActivityView: View {
                 if tall { lastHour }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 5) {
-                        let latest = latestEventIDs
-                        ForEach(m.events) { e in
-                            HStack(spacing: 10) {
-                                Text(e.time.formatted(date: .omitted, time: .standard))
-                                    .font(.system(.caption, design: .rounded)).monospacedDigit()
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 70, alignment: .leading)
-                                Circle().fill(e.connected ? t.online : Color.secondary.opacity(0.6)).frame(width: 7, height: 7)
-                                Text(e.device).font(.system(.callout, design: .rounded).weight(.semibold))
-                                Text(e.connected ? "connected" : "disconnected").font(.callout)
-                                Text("on \(e.vpn)\(e.ip == "-" ? "" : " from \(withFlag(e.ip))")").font(.callout).foregroundStyle(.secondary)
-                                    .help(countryOf(e.ip) ?? "")
-                                Spacer()
-                                // the device's speed now, on its newest event only, while it's online
-                                if latest.contains(e.id) && m.isOnline(e.device) {
-                                    Sparkline(history: m.deviceHistory(e.device), name: e.device, width: 70, height: 20)
-                                }
+                        let latest = latestEventIDs, latestLimit = latestLimitIDs
+                        ForEach(items) { item in
+                            switch item {
+                            case .live(let e): liveRow(e, latest: latest.contains(e.id))
+                            case .usage(let e): limitRow(e, latest: latestLimit.contains(e.id))
                             }
                         }
                     }
@@ -751,6 +750,77 @@ struct ActivityView: View {
                 .frame(maxHeight: tall ? .infinity : 104)
             }
         }
+    }
+
+    private func timeText(_ d: Date) -> some View {
+        Text(d.formatted(date: .omitted, time: .standard))
+            .font(.system(.caption, design: .rounded)).monospacedDigit()
+            .foregroundStyle(.secondary)
+            .frame(width: 70, alignment: .leading)
+    }
+
+    private func liveRow(_ e: LiveEvent, latest: Bool) -> some View {
+        HStack(spacing: 10) {
+            timeText(e.time)
+            Circle().fill(e.connected ? t.online : Color.secondary.opacity(0.6)).frame(width: 7, height: 7)
+                .frame(width: 12)
+            Text(e.device).font(.system(.callout, design: .rounded).weight(.semibold))
+            Text(e.connected ? "connected" : "disconnected").font(.callout)
+            Text("on \(e.vpn)\(e.ip == "-" ? "" : " from \(withFlag(e.ip))")").font(.callout).foregroundStyle(.secondary)
+                .help(countryOf(e.ip) ?? "")
+            Spacer()
+            // the device's speed now, on its newest event only, while it's online
+            if latest && m.isOnline(e.device) {
+                Sparkline(history: m.deviceHistory(e.device), name: e.device, width: 70, height: 20)
+            }
+        }
+        .frame(minHeight: 20)
+    }
+
+    private func limitIcon(_ k: UsageEvent.Kind) -> (String, Color) {
+        switch k {
+        case .nearing: return ("gauge", .orange)
+        case .reached: return ("gauge", .red)
+        case .paused: return ("pause", .orange)
+        case .resumed: return ("circle-check", t.online)
+        case .limitSet, .limitRemoved: return ("gauge", .secondary)
+        }
+    }
+
+    private func limitRow(_ e: UsageEvent, latest: Bool) -> some View {
+        let (icon, color) = limitIcon(e.kind)
+        return HStack(spacing: 10) {
+            timeText(e.time)
+            LucideIcon(icon, size: 11).foregroundStyle(color).frame(width: 12)
+            Text(e.device).font(.system(.callout, design: .rounded).weight(.semibold))
+            Text(e.text).font(.callout).lineLimit(1).layoutPriority(1)
+            if !e.detail.isEmpty {
+                Text(e.detail).font(.callout).foregroundStyle(.secondary).monospacedDigit()
+                    .lineLimit(1).truncationMode(.tail)
+                    .help(e.detail)
+            }
+            Spacer(minLength: 6)
+            // pause/resume and the limit, on the device's newest limit event
+            if latest {
+                if let p = m.pauseInfo(e.device) { PausedBadge(info: p) }
+                Menu {
+                    LimitMenuItems(m: m, server: m.server, name: e.device)
+                } label: { LucideIcon("ellipsis", size: 13).foregroundStyle(.secondary).frame(width: 18, height: 18) }
+                    .fullLabelMenu()
+                    .disabled(m.busy)
+                    .accessibilityLabel("Limit options for \(e.device)")
+                    .frame(width: 18, height: 18)
+            }
+        }
+        .frame(minHeight: 20)
+        .contextMenu { LimitMenuItems(m: m, server: m.server, name: e.device) }
+    }
+
+    /// Newest limit event per device.
+    private var latestLimitIDs: Set<UUID> {
+        var seen = Set<String>(), ids = Set<UUID>()
+        for e in m.limitEvents where !seen.contains(e.device) { seen.insert(e.device); ids.insert(e.id) }
+        return ids
     }
 
     /// Newest event per device (events are newest first).
