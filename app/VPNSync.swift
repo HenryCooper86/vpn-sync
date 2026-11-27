@@ -343,6 +343,12 @@ final class Model: ObservableObject {
                 needs = true
             }
             if line.hasPrefix("would rename") || line.hasPrefix("would create") { needs = true }
+            // Check compares the server's profiles with the Desktop folder
+            for (prefix, verb) in [("would add: ", "Sync would add"), ("would remove: ", "Sync would remove"),
+                                   ("would update: ", "Sync would update")] where line.hasPrefix(prefix) {
+                needs = true
+                if check { notices.append("\(verb) \(line.dropFirst(prefix.count)).") }
+            }
             if line.hasPrefix("! could not reach") { unreachable = true }
             if line.contains("server tools aren't installed") { status = .needsInstall; return }
             if line.hasPrefix("OpenVPN Connect: updated") || line.hasPrefix("IP changed") || line.hasPrefix("renamed") {
@@ -1060,8 +1066,10 @@ struct ContentView: View {
                     Button { Task { await m.check() } } label: { Label("Check", lucide: "search") }
                         .glassButton()
                         .disabled(m.busy || m.server.isEmpty)
+                        .help("Compares \(m.server)'s profiles with the ones on your Desktop and says what Sync would change. Changes nothing.")
                     Button { Task { await m.sync() } } label: { Label("Sync Now", lucide: "refresh-cw") }
                         .glassButton(prominent: true)
+                        .help("Updates the profiles for a new IP on the server, then copies every profile to your Desktop and updates OpenVPN Connect.")
                         .keyboardShortcut("r", modifiers: .command)
                         .disabled(m.busy || m.server.isEmpty)
                 }
@@ -1116,8 +1124,12 @@ struct ContentView: View {
             .padding(14).frame(maxWidth: .infinity, alignment: .leading)
             .glassPanel(18, tint: .orange)
         case .needsSync:
-            Text("The server's IP or profiles changed. Sync to update the profiles on your Desktop.")
-                .font(.callout)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(m.notices.isEmpty ? "The server's IP changed. Sync to update the profiles on your Desktop."
+                                       : "The profiles on your Desktop are out of date. Sync to update them.")
+                    .font(.callout.weight(.semibold))
+                ForEach(m.notices, id: \.self) { Text($0).font(.callout).fixedSize(horizontal: false, vertical: true) }
+            }
                 .padding(14).frame(maxWidth: .infinity, alignment: .leading)
                 .glassPanel(18, tint: .orange)
         case .failed(let msg):

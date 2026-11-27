@@ -118,7 +118,8 @@ when exporting.
 
 ```
 vpn-sync [server...]                       sync profiles to the Desktop
-vpn-sync --check [server]                  show what would change
+vpn-sync --check [server]                  compare the server's profiles with the Desktop: what a
+                                           sync would add, remove or update (changes nothing)
 vpn-sync --add a,b,c <server>              create devices
 vpn-sync --remove a,b <server>             revoke/remove devices
 vpn-sync status <server>                   who is connected now

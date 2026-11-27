@@ -441,6 +441,45 @@ add_names() { # add_names <var> <list>
 	done
 }
 
+# check_profiles DIR: download the server's profiles to a temporary folder and say what a sync
+# would change in DIR: devices it would add or remove, and devices whose profiles differ.
+check_profiles() {
+	local dir="$1" sudo stage
+	sudo=$(sudo_prefix)
+	stage=$(mktemp -d "${TMPDIR:-/tmp}/vpn-sync.XXXXXX"); STAGES="$STAGES $stage"
+	remote "${sudo}/usr/local/sbin/vpn-export-profiles" </dev/null | tar xzf - -C "$stage" \
+		|| { info "  ! could not download profiles to compare"; return 1; }
+	# one line per profile file: "<kind>/<file>" (QR images are made from the .conf, so they're skipped)
+	files() { ( cd "$1" 2>/dev/null && find OpenVPN WireGuard IKEv2 -type f \( -name '*.ovpn' -o -name '*.conf' -o -name '*.mobileconfig' -o -name '*.sswan' -o -name '*.p12' \) 2>/dev/null | sort ); }
+	dev() { local b="${1##*/}"; printf '%s' "${b%.*}"; }
+	local f added="" removed="" changed="" n=0
+	local srv loc; srv=$(files "$stage"); loc=$(files "$dir")
+	# devices only on the server, only on this Mac, and in both with different files
+	local sdev ldev
+	sdev=$(printf '%s\n' "$srv" | while IFS= read -r f; do [ -n "$f" ] && dev "$f" && echo; done | sort -u)
+	ldev=$(printf '%s\n' "$loc" | while IFS= read -r f; do [ -n "$f" ] && dev "$f" && echo; done | sort -u)
+	added=$(comm -23 <(printf '%s\n' "$sdev") <(printf '%s\n' "$ldev") | grep . | paste -sd, - | sed 's/,/, /g')
+	removed=$(comm -13 <(printf '%s\n' "$sdev") <(printf '%s\n' "$ldev") | grep . | paste -sd, - | sed 's/,/, /g')
+	local both kinds d
+	both=$(comm -12 <(printf '%s\n' "$sdev") <(printf '%s\n' "$ldev") | grep . || true)
+	for d in $both; do
+		kinds=""
+		for f in $(printf '%s\n' "$srv" "$loc" | grep -E "/$d\.[a-z0-9]+$" | sort -u); do
+			if ! cmp -s "$stage/$f" "$dir/$f"; then
+				case "$f" in OpenVPN/*) k=OpenVPN ;; WireGuard/*) k=WireGuard ;; *) k=IKEv2 ;; esac
+				case " $kinds " in *" $k "*) ;; *) kinds="$kinds $k" ;; esac
+			fi
+		done
+		[ -n "$kinds" ] && changed="$changed${changed:+, }$d (${kinds# })"
+	done
+	changed=$(printf '%s' "$changed" | sed 's/ \([A-Za-z]*\) \([A-Za-z]*\))/ \1, \2)/g')
+	[ -n "$added" ] && { info "  would add: $added"; n=$((n + 1)); }
+	[ -n "$removed" ] && { info "  would remove: $removed"; n=$((n + 1)); }
+	[ -n "$changed" ] && { info "  would update: $changed"; n=$((n + 1)); }
+	if [ $n -eq 0 ]; then info "  up to date: the profiles in ${dir##*/} match the server"; fi
+	return 0
+}
+
 sync_server() {
 	load_server "$1"
 	info "== $S_NAME"
@@ -470,7 +509,7 @@ sync_server() {
 	if [ $opt_check -eq 1 ]; then
 		info "  current IP: $ip"
 		if [ -n "$old_dir" ]; then info "  would rename $old_dir -> $dest and refresh profiles"
-		elif [ -d "$dest" ]; then info "  would refresh profiles in $dest"
+		elif [ -d "$dest" ]; then check_profiles "$dest" || return 1
 		else info "  would create $dest"; fi
 		return 0
 	fi

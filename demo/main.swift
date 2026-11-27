@@ -99,6 +99,17 @@ default:
         say("== \(s)")
         say("  trying \(d.ip)    ok")
         say("  server: up to date: all configs use \(d.ip)")
+        // VPNSYNC_DEMO_CHANGES=1: Check finds profiles the Desktop doesn't have yet (for screenshots)
+        if args.contains("--check") {
+            if ProcessInfo.processInfo.environment["VPNSYNC_DEMO_CHANGES"] != nil, let a = d.devices.first, let b = d.devices.last {
+                say("  current IP: \(d.ip)")
+                say("  would add: kitchen-ipad")
+                say("  would update: \(a.name) (WireGuard), \(b.name) (OpenVPN, IKEv2)")
+            } else {
+                say("  up to date: the profiles in \(s)-\(d.ip) match the server")
+            }
+            continue
+        }
         say("  profiles: \(d.devices.count) OpenVPN, \(d.devices.count) WireGuard\(d.ipsec ? ", \(d.devices.count) IKEv2" : "")")
     }
 }
