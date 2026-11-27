@@ -11,6 +11,8 @@ struct ServerSnapshot {
     var ovpnFileTime = 0                   // when OpenVPN last wrote its status file
     var wg: [String: WGPeer] = [:]
     var ike: [String: IKEConn] = [:]
+    /// What the server listens on (empty in snapshots without PORT lines)
+    var ports: [ServerPort] = []
     /// OpenVPN connects/disconnects from its log (instant, unlike the status file)
     var ovpnEvents: [(time: Date, name: String, connected: Bool, ip: String)] = []
     var totals: ServerTotals?
@@ -38,12 +40,14 @@ struct SnapshotParser {
         case "OVPNTIME":
             cur.ovpnFileTime = i(1)
         case "OVPN" where f.count >= 7:
-            cur.ovpn[f[1]] = OVPNConn(realIP: f[2], vpnIP: f[3], rx: i64(4), tx: i64(5), since: date(6))
+            cur.ovpn[f[1]] = OVPNConn(realIP: f[2], vpnIP: f[3], rx: i64(4), tx: i64(5), since: date(6), port: portField(f))
         case "WG" where f.count >= 7:
             cur.wg[f[1]] = WGPeer(endpoint: f[2] == "-" ? nil : f[2], vpnIP: f[3], rx: i64(4), tx: i64(5),
-                                  handshake: i(6) > 0 ? date(6) : nil)
+                                  handshake: i(6) > 0 ? date(6) : nil, port: portField(f))
         case "IKE" where f.count >= 7:
-            cur.ike[f[1]] = IKEConn(realIP: f[2], vpnIP: f[3], rx: i64(4), tx: i64(5), since: date(6))
+            cur.ike[f[1]] = IKEConn(realIP: f[2], vpnIP: f[3], rx: i64(4), tx: i64(5), since: date(6), port: portField(f))
+        case "PORT" where f.count >= 4:
+            if let p = Int(f[3]) { cur.ports.append(ServerPort(vpn: f[1], proto: f[2], port: p)) }
         case "EVENT" where f.count >= 6:
             cur.ovpnEvents.append((date(1), f[3], f[4] == "connected", f[5]))
         case "TOTALS" where f.count >= 6:

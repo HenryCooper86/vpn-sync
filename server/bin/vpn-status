@@ -5,10 +5,11 @@
 # Snapshot format (tab separated):
 #   SNAPSHOT <now>
 #   OVPNTIME <epoch the OpenVPN status file was written>      (OpenVPN refreshes it every 60 s)
-#   OVPN  <name> <real ip> <vpn ip> <bytes rx> <bytes tx> <connected since>
-#   WG    <name> <endpoint ip|-> <vpn ip> <bytes rx> <bytes tx> <latest handshake, 0 = never>
-#   IKE   <name> <real ip|-> <vpn ip|-> <bytes rx> <bytes tx> <connected since>   (IKEv2; all of a
-#         device's tunnels added up)
+#   OVPN  <name> <real ip> <vpn ip> <bytes rx> <bytes tx> <connected since> <device port|->
+#   WG    <name> <endpoint ip|-> <vpn ip> <bytes rx> <bytes tx> <latest handshake, 0 = never> <device port|->
+#   IKE   <name> <real ip|-> <vpn ip|-> <bytes rx> <bytes tx> <connected since> <device port|->
+#         (IKEv2; all of a device's tunnels added up)
+#   PORT  <openvpn|wireguard|ipsec|ssh> <tcp|udp> <port>   (what the server listens on; every ~30 s)
 #   EVENT <epoch> openvpn <name> connected|disconnected <ip|->   (from the OpenVPN log, instant)
 #   SERVICE <openvpn|wireguard|ipsec> <active|inactive|failed|missing> <active since epoch|0>
 #   TOTALS <iface> <today rx> <today tx> <month rx> <month tx>   (bytes, from vnstat; every ~30 s)
@@ -41,20 +42,23 @@ snapshot() {
 	if [[ -n "$OVPN_STATUS" ]]; then
 		awk -F, '
 			$1=="TIME" {print "OVPNTIME\t"$3}
-			$1=="CLIENT_LIST" && $2!="UNDEF" {ip=$3; sub(/:[0-9]+$/,"",ip); print "OVPN\t"$2"\t"ip"\t"$4"\t"$6"\t"$7"\t"$9}
+			$1=="CLIENT_LIST" && $2!="UNDEF" {ip=$3; p="-"; if (match(ip, /:[0-9]+$/)) { p=substr(ip, RSTART+1); ip=substr(ip, 1, RSTART-1) }
+				print "OVPN\t"$2"\t"ip"\t"$4"\t"$6"\t"$7"\t"$9"\t"p}
 		' "$OVPN_STATUS"
 	fi
 	if [[ -f "$WG_CONF" ]] && command -v wg >/dev/null; then
 		local names; names=$(wg_names)
 		wg show wg0 dump 2>/dev/null | awk -F'\t' -v names="$names" '
 			BEGIN { n=split(names, L, "\n"); for(i=1;i<=n;i++){ split(L[i], f, "\t"); nm[f[1]]=f[2]; vip[f[1]]=f[3] } }
-			NR>1 { ep=$3; if(ep=="(none)") ep="-"; else sub(/:[0-9]+$/,"",ep); gsub(/^\[|\]$/,"",ep)
+			NR>1 { ep=$3; p="-"; if(ep=="(none)") ep="-"; else if (match(ep, /:[0-9]+$/)) { p=substr(ep, RSTART+1); ep=substr(ep, 1, RSTART-1) }
+			       gsub(/^\[|\]$/,"",ep)
 			       name=($1 in nm)?nm[$1]:substr($1,1,8)
-			       print "WG\t"name"\t"ep"\t"vip[$1]"\t"$6"\t"$7"\t"$5 }'
+			       print "WG\t"name"\t"ep"\t"vip[$1]"\t"$6"\t"$7"\t"$5"\t"p }'
 	fi
 	ikev2_sas | awk -F'\t' '
-		{ n=$1; if (!(n in rx)) { order[++k]=n; since[n]=$6 } ip[n]=$2; vip[n]=$3; rx[n]+=$4; tx[n]+=$5; if ($6+0 < since[n]+0) since[n]=$6 }
-		END { for (i=1; i<=k; i++) { n=order[i]; printf "IKE\t%s\t%s\t%s\t%.0f\t%.0f\t%s\n", n, ip[n], vip[n], rx[n], tx[n], since[n] } }'
+		{ n=$1; if (!(n in rx)) { order[++k]=n; since[n]=$6; port[n]="-" } ip[n]=$2; vip[n]=$3; rx[n]+=$4; tx[n]+=$5; if ($6+0 < since[n]+0) since[n]=$6
+		  if ($8 != "" && $8 != "-") port[n]=$8 }
+		END { for (i=1; i<=k; i++) { n=order[i]; printf "IKE\t%s\t%s\t%s\t%.0f\t%.0f\t%s\t%s\n", n, ip[n], vip[n], rx[n], tx[n], since[n], port[n] } }'
 }
 
 events_since() { # OpenVPN connect/disconnect lines from the journal after epoch $1
@@ -68,6 +72,22 @@ events_since() { # OpenVPN connect/disconnect lines from the journal after epoch
 			for (i=2;i<=NF;i++) if ($i ~ /^[A-Za-z0-9_.-]+\/[0-9a-fA-F.:]+:[0-9]+$/) {
 				split($i, p, "/"); ip=p[2]; sub(/:[0-9]+$/,"",ip)
 				print "EVENT\t"t"\topenvpn\t"p[1]"\tdisconnected\t"ip; break } }'
+}
+
+ports() { # what each VPN and SSH listen on (from their configs; the cloud firewall must allow these)
+	local p proto
+	if [[ -f "$OVPN_SERVER_CONF" ]]; then
+		p=$(awk '$1=="port"{print $2; exit}' "$OVPN_SERVER_CONF"); proto=$(awk '$1=="proto"{print $2; exit}' "$OVPN_SERVER_CONF")
+		case "$proto" in tcp*) proto=tcp ;; *) proto=udp ;; esac
+		printf 'PORT\topenvpn\t%s\t%s\n' "$proto" "${p:-1194}"
+	fi
+	if [[ -f "$WG_CONF" ]]; then
+		p=$(awk -F'=' '/^[[:space:]]*ListenPort/{gsub(/[[:space:]]/,"",$2); print $2; exit}' "$WG_CONF")
+		[[ -n "$p" ]] && printf 'PORT\twireguard\tudp\t%s\n' "$p"
+	fi
+	if have_ikev2 2>/dev/null; then printf 'PORT\tipsec\tudp\t500\nPORT\tipsec\tudp\t4500\n'; fi
+	for p in $(sshd -T 2>/dev/null | awk '$1=="port"{print $2}' | sort -un); do printf 'PORT\tssh\ttcp\t%s\n' "$p"; done
+	return 0
 }
 
 totals() { # server network totals from vnstat (if installed and has data yet)
@@ -115,7 +135,7 @@ devinfo() { # platform/app each OpenVPN client reported (IV_PLAT / IV_GUI_VER), 
 usage() { [[ -x /usr/local/sbin/vpn-usage ]] && /usr/local/sbin/vpn-usage report 2>/dev/null; return 0; }
 
 if [[ $interval -eq 0 ]]; then
-	snapshot; totals; devinfo; daily; usage; echo "END"; exit 0
+	snapshot; ports; totals; devinfo; daily; usage; echo "END"; exit 0
 fi
 last=$(date +%s.%N)
 n=0
@@ -124,7 +144,7 @@ while :; do
 	now=$(date +%s.%N)
 	events_since "$last"
 	last=$now
-	(( n % 10 == 0 )) && { totals; usage; }
+	(( n % 10 == 0 )) && { ports; totals; usage; }
 	(( n % 100 == 0 )) && { devinfo; daily; }
 	n=$((n + 1))
 	echo "END"

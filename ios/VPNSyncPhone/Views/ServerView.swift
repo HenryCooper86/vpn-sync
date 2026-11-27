@@ -23,6 +23,7 @@ struct ServerView: View {
                 header
                 stoppedBanner
                 servicesRow
+                portsCard
                 Picker("Section", selection: $tab) {
                     ForEach(Tab.allCases, id: \.self) { t in
                         Text(t == .activity && activityCount > 0 ? "Activity (\(activityCount))" : t.rawValue).tag(t)
@@ -174,6 +175,33 @@ struct ServerView: View {
                         .tint(.primary)
                         .accessibilityLabel("\(label), \(s.state == "active" ? "running" : s.state)")
                     }
+                }
+            }
+        }
+    }
+
+    /// What the server listens on: the ports its cloud firewall has to allow.
+    @ViewBuilder private var portsCard: some View {
+        let vpns = ["openvpn", "wireguard", "ipsec", "ssh"].filter { live.ports.text($0) != nil }
+        if !vpns.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Ports", systemImage: "network").font(.subheadline.weight(.semibold))
+                LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
+                          alignment: .leading, spacing: 6) {
+                    ForEach(vpns, id: \.self) { v in
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(portLabel(v)).font(.caption).foregroundStyle(.secondary)
+                            Text(live.ports.text(v) ?? "").font(.subheadline.weight(.medium)).monospacedDigit()
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card(18, padding: 14)
+            .contextMenu {
+                Button("Copy Ports", systemImage: "doc.on.doc") {
+                    UIPasteboard.general.string = vpns.map { "\(portLabel($0)): \(live.ports.text($0) ?? "")" }.joined(separator: "\n")
                 }
             }
         }

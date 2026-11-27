@@ -63,6 +63,8 @@ final class ServerLive: ObservableObject, Identifiable {
     @Published private(set) var days: [DayTraffic] = []
     @Published private(set) var devInfo: [String: (platform: String, app: String)] = [:]
     @Published private(set) var devices: [DeviceInfo] = []
+    /// What the server listens on (PORT lines, every ~30 s)
+    @Published private(set) var ports: [ServerPort] = []
 
     private var task: Task<Void, Never>?
     private var parser = SnapshotParser()
@@ -104,8 +106,23 @@ final class ServerLive: ObservableObject, Identifiable {
         if wgOnline(n) { vpns.append("WireGuard") }
         if ike[n] != nil { vpns.append("IKEv2") }
         guard !vpns.isEmpty else { return nil }
-        let from = ovpn[n]?.realIP ?? ike[n]?.realIP ?? wg[n]?.endpoint
-        return vpns.joined(separator: " and ") + (from.map { $0 == "-" ? "" : " from \($0)" } ?? "")
+        let from = ovpn[n].map { addressWithPort($0.realIP, $0.port) }
+            ?? ike[n].flatMap { $0.realIP == "-" ? nil : addressWithPort($0.realIP, $0.port) }
+            ?? wg[n]?.endpoint.map { addressWithPort($0, wg[n]?.port) }
+        return vpns.joined(separator: " and ") + (from.map { " from \($0)" } ?? "")
+    }
+
+    /// Each VPN a device is connected on now: the server's port and the device's address and port.
+    func connections(_ n: String) -> [(vpn: String, server: String?, from: String, vpnIP: String?)] {
+        var out: [(String, String?, String, String?)] = []
+        func from(_ ip: String?, _ port: Int?) -> String {
+            guard let ip, ip != "-" else { return "unknown address" }
+            return addressWithPort(ip, port)
+        }
+        if let o = ovpn[n] { out.append(("OpenVPN", ports.text("openvpn"), from(o.realIP, o.port), o.vpnIP.isEmpty ? nil : o.vpnIP)) }
+        if wgOnline(n), let w = wg[n] { out.append(("WireGuard", ports.text("wireguard"), from(w.endpoint, w.port), w.vpnIP)) }
+        if let k = ike[n] { out.append(("IKEv2", ports.text("ipsec"), from(k.realIP, k.port), k.vpnIP == "-" ? nil : k.vpnIP)) }
+        return out
     }
 
     /// When a device was last seen, for offline devices.
@@ -220,6 +237,7 @@ final class ServerLive: ObservableObject, Identifiable {
         link = .live
         lastSnapshot = now
         services = s.services
+        if !s.ports.isEmpty, s.ports != ports { ports = s.ports }
 
         // OpenVPN: the status file is up to a minute old; its log events are instant
         for e in s.ovpnEvents {

@@ -21,6 +21,8 @@ final class ServerWatcher {
     private(set) var ikeLive: [String: IKEConn] = [:]
     private(set) var rates: [String: Rate] = [:]
     private(set) var services: [String: ServiceState] = [:]
+    /// What the server listens on (PORT lines, every ~30 s); kept across reconnects.
+    private(set) var ports: [ServerPort] = []
     private(set) var events: [LiveEvent] = []
     private(set) var lastSnapshot: Date?
 
@@ -41,6 +43,7 @@ final class ServerWatcher {
     private var snapWG: [String: WGPeer] = [:]
     private var snapIKE: [String: IKEConn] = [:]
     private var snapServices: [String: ServiceState] = [:]
+    private var snapPorts: [ServerPort] = []
     private var snapTime = 0
     private var snapUsage: UsageState?
     private var ovpnFileTime = 0
@@ -173,7 +176,9 @@ final class ServerWatcher {
             link = .live
         case "SNAPSHOT":
             snapTime = Int(f[safe: 1] ?? "") ?? Int(Date().timeIntervalSince1970)
-            snapOVPN = [:]; snapWG = [:]; snapIKE = [:]; snapServices = [:]
+            snapOVPN = [:]; snapWG = [:]; snapIKE = [:]; snapServices = [:]; snapPorts = []
+        case "PORT" where f.count >= 4:
+            if let p = Int(f[3]) { snapPorts.append(ServerPort(vpn: f[1], proto: f[2], port: p)) }
         case "USAGEAT":
             snapUsage = UsageState()
             _ = snapUsage?.apply(f)
@@ -193,14 +198,15 @@ final class ServerWatcher {
             snapServices[f[1]] = ServiceState(state: f[2], since: since > 0 ? Date(timeIntervalSince1970: TimeInterval(since)) : nil)
         case "OVPN" where f.count >= 7:
             snapOVPN[f[1]] = OVPNConn(realIP: f[2], vpnIP: f[3], rx: Int64(f[4]) ?? 0, tx: Int64(f[5]) ?? 0,
-                                      since: Date(timeIntervalSince1970: TimeInterval(Int(f[6]) ?? 0)))
+                                      since: Date(timeIntervalSince1970: TimeInterval(Int(f[6]) ?? 0)), port: portField(f))
         case "WG" where f.count >= 7:
             let hs = Int(f[6]) ?? 0
             snapWG[f[1]] = WGPeer(endpoint: f[2] == "-" ? nil : f[2], vpnIP: f[3], rx: Int64(f[4]) ?? 0,
-                                  tx: Int64(f[5]) ?? 0, handshake: hs > 0 ? Date(timeIntervalSince1970: TimeInterval(hs)) : nil)
+                                  tx: Int64(f[5]) ?? 0, handshake: hs > 0 ? Date(timeIntervalSince1970: TimeInterval(hs)) : nil,
+                                  port: portField(f))
         case "IKE" where f.count >= 7:
             snapIKE[f[1]] = IKEConn(realIP: f[2], vpnIP: f[3], rx: Int64(f[4]) ?? 0, tx: Int64(f[5]) ?? 0,
-                                    since: Date(timeIntervalSince1970: TimeInterval(Int(f[6]) ?? 0)))
+                                    since: Date(timeIntervalSince1970: TimeInterval(Int(f[6]) ?? 0)), port: portField(f))
         case "EVENT" where f.count >= 6:
             let t = Int(f[1]) ?? snapTime
             let connected = f[4] == "connected"
@@ -211,6 +217,7 @@ final class ServerWatcher {
                                connected: connected, ip: ip))
         case "END":
             if let u = snapUsage { snapUsage = nil; model?.setUsage(u, server: server) }
+            if !snapPorts.isEmpty, snapPorts != ports { ports = snapPorts }
             commitSnapshot()
         default:
             break
@@ -444,6 +451,7 @@ extension Model {
     var events: [LiveEvent] { live?.events ?? [] }
     var lastSnapshot: Date? { live?.lastSnapshot }
     var services: [String: ServiceState] { live?.services ?? [:] }
+    var ports: [ServerPort] { live?.ports ?? [] }
 
     func isOnline(_ name: String) -> Bool { live?.isOnline(name) ?? false }
     func wgOnline(_ name: String) -> Bool { live?.wgOnline(name) ?? false }
@@ -540,7 +548,7 @@ struct LiveLine: View {
         if let text = summary {
             Text(text).font(.caption).foregroundStyle(m.isOnline(name) ? .primary : .secondary)
                 .lineLimit(1).truncationMode(.tail)
-                .help(location.map { "Connecting from \($0)" } ?? "")
+                .help(portsHelp)
         }
     }
 
@@ -551,17 +559,39 @@ struct LiveLine: View {
         return nil
     }
 
+    /// Each connection: the server port it uses and the device's own address and port.
+    private var portsHelp: String {
+        var lines: [String] = []
+        let ports = m.ports
+        func line(_ vpn: String, _ label: String, _ ip: String?, _ port: Int?) {
+            let server = ports.text(vpn).map { " to \($0)" } ?? ""
+            let from = ip.flatMap { $0 == "-" ? nil : addressWithPort($0, port) } ?? "an unknown address"
+            lines.append("\(label)\(server) from \(from)\(ip.flatMap(countryOf).map { " (\($0))" } ?? "")")
+        }
+        if let o = m.ovpnLive[name] { line("openvpn", "OpenVPN", o.realIP, o.port) }
+        if m.wgOnline(name), let w = m.wgLive[name] { line("wireguard", "WireGuard", w.endpoint, w.port) }
+        if let k = m.ikeLive[name] { line("ipsec", "IKEv2", k.realIP, k.port) }
+        if lines.isEmpty, let loc = location { return "Connecting from \(loc)" }
+        return lines.joined(separator: "\n")
+    }
+
+    private func from(_ ip: String?, _ port: Int?) -> String {
+        guard let ip, ip != "-" else { return "an unknown address" }
+        let flag = GeoDB.shared.country(ip).map { flagEmoji($0) + " " } ?? ""
+        return flag + addressWithPort(ip, port)
+    }
+
     private var summary: String? {
         guard m.lastSnapshot != nil else { return nil }
         var parts: [String] = []
         if let o = m.ovpnLive[name] {
-            parts.append("On OpenVPN from \(withFlag(o.realIP)) since \(o.since.formatted(date: .omitted, time: .shortened))")
+            parts.append("On OpenVPN from \(from(o.realIP, o.port)) since \(o.since.formatted(date: .omitted, time: .shortened))")
         }
         if m.wgOnline(name), let w = m.wgLive[name] {
-            parts.append("\(parts.isEmpty ? "On " : "and ")WireGuard from \(w.endpoint.map(withFlag) ?? "an unknown address")")
+            parts.append("\(parts.isEmpty ? "On " : "and ")WireGuard from \(from(w.endpoint, w.port))")
         }
         if let k = m.ikeLive[name] {
-            parts.append("\(parts.isEmpty ? "On " : "and ")IKEv2 from \(k.realIP == "-" ? "an unknown address" : withFlag(k.realIP))"
+            parts.append("\(parts.isEmpty ? "On " : "and ")IKEv2 from \(from(k.realIP, k.port))"
                          + (parts.isEmpty ? " since \(k.since.formatted(date: .omitted, time: .shortened))" : ""))
         }
         if !parts.isEmpty { return parts.joined(separator: ", ") }
@@ -623,16 +653,28 @@ struct ServicesBar: View {
     @EnvironmentObject var m: Model
     @Environment(\.theme) private var t
     var body: some View {
+        // ports next to each service when the window is wide enough; otherwise in the Ports menu only
+        ViewThatFits(in: .horizontal) {
+            bar(ports: true, compactPorts: false)
+            bar(ports: false, compactPorts: false)
+            bar(ports: false, compactPorts: true)
+        }
+        .disabled(m.busy || m.server.isEmpty)
+        .task(id: m.server) { await m.refreshInstanceState(m.server) }
+    }
+
+    private func bar(ports: Bool, compactPorts: Bool) -> some View {
         HStack(spacing: 10) {
             GlassGroup(spacing: 8) {
                 HStack(spacing: 8) {
-                    serviceMenu("openvpn", "OpenVPN")
-                    serviceMenu("wireguard", "WireGuard")
+                    serviceMenu("openvpn", "OpenVPN", port: ports)
+                    serviceMenu("wireguard", "WireGuard", port: ports)
                     // only where IPsec/IKEv2 is installed (older server tools don't report it)
-                    if let s = m.services["ipsec"], s.state != "missing" { serviceMenu("ipsec", "IPsec") }
+                    if let s = m.services["ipsec"], s.state != "missing" { serviceMenu("ipsec", "IPsec", port: ports) }
                 }
             }
-            Spacer()
+            Spacer(minLength: 8)
+            PortsMenu(compact: compactPorts)
             Menu {
                 let all = hasIPsec ? "All VPNs" : "Both VPNs"
                 Button("Restart \(all)…") { m.confirmService = ServiceAction(server: m.server, vpn: "all", action: "restart") }
@@ -657,13 +699,11 @@ struct ServicesBar: View {
             .help(m.isLightsail(m.server) ? "Start, stop or restart the VPNs; reboot, stop or start the server"
                                           : "Start, stop or restart the VPNs, or reboot the server")
         }
-        .disabled(m.busy || m.server.isEmpty)
-        .task(id: m.server) { await m.refreshInstanceState(m.server) }
     }
 
     private var hasIPsec: Bool { (m.services["ipsec"]?.state).map { $0 != "missing" } ?? false }
 
-    @ViewBuilder private func serviceMenu(_ vpn: String, _ label: String) -> some View {
+    @ViewBuilder private func serviceMenu(_ vpn: String, _ label: String, port: Bool) -> some View {
         let s = m.services[vpn]
         if s?.state != "missing" {
             Menu {
@@ -680,13 +720,25 @@ struct ServicesBar: View {
                         .shadow(color: s?.state == "active" ? t.online.opacity(0.8) : .clear, radius: 3)
                     Text(label).font(.system(.callout, design: .rounded).weight(.semibold))
                     Text(stateText(s)).font(.system(.callout, design: .rounded)).foregroundStyle(.secondary)
+                    if port, let p = m.ports.text(vpn) {
+                        Text(p).font(.system(.caption, design: .rounded).weight(.medium)).monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(.secondary.opacity(0.12), in: Capsule())
+                    }
                 }
             }
             .fullLabelMenu()
             .padding(.horizontal, 12).padding(.vertical, 7)
             .glassCapsule(tint: s?.state == "failed" ? .red : nil)
-            .help(s?.since.map { "\(label) running since \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "\(label) service")
+            .help(serviceHelp(vpn, label, s))
         }
+    }
+
+    private func serviceHelp(_ vpn: String, _ label: String, _ s: ServiceState?) -> String {
+        var t = s?.since.map { "\(label) running since \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "\(label) service"
+        if let p = m.ports.text(vpn) { t += "\nListens on \(p); the server's firewall must allow it." }
+        return t
     }
 
     private func dotColor(_ s: ServiceState?) -> Color {
@@ -885,6 +937,62 @@ struct ActivityView: View {
         HStack(spacing: 5) {
             Capsule().fill(c).frame(width: 10, height: 4)
             Text(text).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+        }
+    }
+}
+
+/// Every port the server listens on, and the address and port each connected device comes from.
+struct PortsMenu: View {
+    @EnvironmentObject var m: Model
+    var compact = false
+    var body: some View {
+        Menu {
+            Section("\(m.server) listens on") {
+                if m.ports.isEmpty {
+                    Text(m.monitoring ? "Waiting for the server…" : "Turn on Live to see them")
+                } else {
+                    ForEach(["openvpn", "wireguard", "ipsec", "ssh"], id: \.self) { vpn in
+                        if let p = m.ports.text(vpn) { Text("\(portLabel(vpn))   \(p)") }
+                    }
+                }
+            }
+            Section("Connected devices") {
+                let rows = deviceRows
+                if rows.isEmpty { Text(m.lastSnapshot == nil ? "Not known yet" : "None connected") }
+                ForEach(rows, id: \.self) { Text($0) }
+            }
+            if !m.ports.isEmpty {
+                Divider()
+                Button("Copy Ports") {
+                    let text = ["openvpn", "wireguard", "ipsec", "ssh"].compactMap { v in m.ports.text(v).map { "\(portLabel(v)): \($0)" } }
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text.joined(separator: "\n"), forType: .string)
+                }
+            }
+        } label: {
+            if compact { LucideIcon("shield").accessibilityLabel("Ports") }
+            else { Label("Ports", lucide: "shield").font(.system(.callout, design: .rounded).weight(.medium)) }
+        }
+        .fullLabelMenu()
+        .padding(.horizontal, 12).padding(.vertical, 7)
+        .glassCapsule()
+        .help("The ports \(m.server) listens on, and where each connected device comes from")
+    }
+
+    /// "laptop: WireGuard (UDP 443) from 203.0.113.5:51234"
+    private var deviceRows: [String] {
+        let ports = m.ports
+        return m.allDeviceNames.filter { m.isOnline($0) }.sorted { $0.localizedStandardCompare($1) == .orderedAscending }.flatMap { n -> [String] in
+            var out: [String] = []
+            func add(_ vpn: String, _ ip: String?, _ port: Int?) {
+                let server = ports.text(vpn).map { " (\($0))" } ?? ""
+                let from = ip.flatMap { $0 == "-" ? nil : addressWithPort($0, port) } ?? "an unknown address"
+                out.append("\(n): \(portLabel(vpn))\(server) from \(from)")
+            }
+            if let o = m.ovpnLive[n] { add("openvpn", o.realIP, o.port) }
+            if m.wgOnline(n), let w = m.wgLive[n] { add("wireguard", w.endpoint, w.port) }
+            if let k = m.ikeLive[n] { add("ipsec", k.realIP, k.port) }
+            return out
         }
     }
 }

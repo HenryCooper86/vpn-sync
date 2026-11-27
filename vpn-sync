@@ -15,6 +15,9 @@
 # Live monitoring:
 #   vpn-sync status <server>              who is connected now (one snapshot)
 #   vpn-sync watch <server> [--interval N]  stream a snapshot every N seconds (default 3)
+#   vpn-sync ports [server...]            the ports each server listens on (VPNs and SSH; the cloud
+#                                         firewall must allow them) and, for each connected device,
+#                                         its VPN, the server port and its own address and port
 #
 # Services:
 #   vpn-sync service <server> <openvpn|wireguard|ipsec|all> <start|stop|restart|status>
@@ -738,6 +741,47 @@ service_cmd() { # service_cmd SERVER VPN ACTION | reboot SERVER
 	remote "$(sudo_prefix)/usr/local/sbin/vpn-service $vpn $action" </dev/null 2>&1
 }
 
+# ports_server SERVER: what it listens on and where each connected device comes from
+ports_server() {
+	local name="$1" snap
+	load_server "$name"; connect "" >&2 || die "can't reach $name"
+	snap=$(remote "$(sudo_prefix)/usr/local/sbin/vpn-status" </dev/null) || die "$name: couldn't read its status"
+	grep -q "^PORT	" <<< "$snap" || die "$name's server tools don't report ports yet (run: vpn-sync server install $name)"
+	awk -F'\t' -v wgwin=180 '
+		function label(v) { return v=="openvpn" ? "OpenVPN" : v=="wireguard" ? "WireGuard" : v=="ipsec" ? "IKEv2" : v=="ssh" ? "SSH" : v }
+		function addr(ip, p) { if (ip=="" || ip=="-") return "unknown"; if (index(ip, ":")) ip="[" ip "]"; return (p=="" || p=="-") ? ip : ip ":" p }
+		$1=="SNAPSHOT" { now=$2 }
+		$1=="PORT" { k=$2 SUBSEP toupper($3); if (!(k in pl)) { ko[++nk]=k; pv[k]=$2; pp[k]=toupper($3) } pl[k]=(k in pl) ? pl[k] ", " $4 : $4 }
+		$1=="OVPN" { row[++nr]=$2 "\topenvpn\t" addr($3, $8) }
+		$1=="WG" && $7>0 && now-$7 < wgwin { row[++nr]=$2 "\twireguard\t" addr($3, $8) }
+		$1=="IKE" { row[++nr]=$2 "\tipsec\t" addr($3, $8) }
+		END {
+			for (i=1; i<=nk; i++) { k=ko[i]; t=pp[k] " " pl[k]; srv[pv[k]]=(pv[k] in srv) ? srv[pv[k]] ", " t : t }
+			printf "%-10s %s\n", "LISTENS", "PORT"
+			split("openvpn wireguard ipsec ssh", order, " ")
+			for (i=1; i<=4; i++) if (order[i] in srv) printf "%-10s %s\n", label(order[i]), srv[order[i]]
+			print ""
+			if (nr == 0) { print "no devices connected"; exit }
+			printf "%-16s %-10s %-14s %s\n", "DEVICE", "VPN", "SERVER PORT", "FROM"
+			for (i=1; i<=nr; i++) { split(row[i], f, "\t"); printf "%-16s %-10s %-14s %s\n", f[1], label(f[2]), srv[f[2]], f[3] }
+		}' <<< "$snap"
+}
+
+ports_cmd() { # ports_cmd [server...]
+	local list=() f s rc=0
+	for s in "$@"; do [[ "$s" =~ $SERVER_RE ]] || die "invalid server name: $s"; list+=("$s"); done
+	if [ ${#list[@]} -eq 0 ]; then
+		for f in "$CONFIG_DIR"/*.conf; do [ -f "$f" ] && list+=("$(basename "$f" .conf)"); done
+	fi
+	[ ${#list[@]} -gt 0 ] || die "no servers configured (see: vpn-sync server add)"
+	for s in "${list[@]}"; do
+		[ "$s" = "${list[0]}" ] || echo
+		info "$s"
+		( ports_server "$s" ) || rc=1
+	done
+	return $rc
+}
+
 SIZE_RE='^[0-9]+(\.[0-9]+)?[KMGTkmgt]?([iI]?[bB])?$'
 # usage_table [only-limited] [device]: the report on stdin as a table, paused devices first,
 # then closest to a limit, then most data this month. Prints nothing when no device matches.
@@ -851,6 +895,7 @@ usage_cmd() { # usage_cmd usage|limits [server...] [--raw] | limit|pause|resume 
 
 case "${1:-}" in
 	status|watch) monitor "$@"; exit ;;
+	ports) shift; ports_cmd "$@"; exit ;;
 	usage|limits|limit|pause|resume) usage_cmd "$@"; exit ;;
 	service) shift; service_cmd "$@"; exit ;;
 	aws) shift; aws_cmd "$@"; exit ;;

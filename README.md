@@ -31,7 +31,8 @@ It can also set up a fresh server for you.
 | | |
 |---|---|
 | **Every server in one place** | Switch between servers, or see all of them at once in the menu bar. Servers behind a firewall are reached through another server over a private network. |
-| **Live view** | Who's connected right now, on which VPN, from which country, since when and how fast, with a log of connects and disconnects and a notification for each. |
+| **Live view** | Who's connected right now, on which VPN, from which country and port, since when and how fast, with a log of connects and disconnects and a notification for each. |
+| **Ports** | The ports each server listens on (OpenVPN, WireGuard, IKEv2, SSH), the ones its firewall must allow, and the address and port each connected device comes from. |
 | **Traffic** | Speed over time, data per device and per protocol, the server's traffic per day for a month. |
 | **Usage limits** | A daily or monthly limit per device that alerts you at 80% and 100%, or also pauses it. Pause or resume any device's internet by hand; it stays connected and nothing is revoked. |
 | **Devices and profiles** | Add, batch add, remove and batch remove devices on every VPN at once. WireGuard QR codes for phones and TVs, IKEv2 profiles that install natively on iPhone, Mac, Android and Windows. |
@@ -120,6 +121,7 @@ vpn-sync --add a,b,c <server>              create devices
 vpn-sync --remove a,b <server>             revoke/remove devices
 vpn-sync status <server>                   who is connected now
 vpn-sync watch <server> [--interval N]     stream connection snapshots
+vpn-sync ports [server...]                 ports each server listens on; each connected device's port
 vpn-sync usage [server...]                 data per device today and this month, limit, % used
 vpn-sync limits [server...]                only devices with a limit or a pause
 vpn-sync limit <server> <device> --daily 2GB --monthly 50GB --action alert|pause

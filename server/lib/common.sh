@@ -54,15 +54,21 @@ ikev2_collect() {
 
 # ikev2_sas: one line per connected IKEv2 tunnel (tab separated):
 #   <name> <real ip> <vpn ip> <bytes rx> <bytes tx> <added epoch> <all vpn ips, comma separated>
+#   <the device's own port|->
 # (a device can lease an IPv4 and an IPv6 address; pausing blocks both)
 # from "ipsec trafficstatus" lines like
 #   #3: "ikev2-cp"[1] 203.0.113.5, type=ESP, add_time=1700000000, inBytes=10, outBytes=20,
 #       maxBytes=2^63B, id='CN=phone, O=IKEv2 VPN', lease=192.168.43.10/32,fddd:500:500:500::1000/128
-# (rx = from the device, tx = to it, as for OpenVPN and WireGuard)
+# (rx = from the device, tx = to it, as for OpenVPN and WireGuard). The device's port comes from
+# "ipsec showstates" (#2: "ikev2-cp"[1] 203.0.113.5:4500 established IKE SA; …), by connection instance.
 ikev2_sas() {
 	have_ikev2 && command -v ipsec >/dev/null || return 0
-	ipsec trafficstatus 2>/dev/null | awk -v q="'" '
+	{ ipsec showstates 2>/dev/null | sed 's/^/STATE /'; ipsec trafficstatus 2>/dev/null; } | awk -v q="'" '
 		function val(key,  r) { r = key "=[^, " q "]+"; if (match($0, r)) return substr($0, RSTART + length(key) + 1, RLENGTH - length(key) - 1); return "" }
+		function inst(  r) { if (match($0, /"ikev2-cp"\[[0-9]+\]/)) return substr($0, RSTART, RLENGTH); return "" }
+		/^STATE / { k = inst(); if (k != "" && !(k in port) && match($0, /\] [^ ]+:[0-9]+ /)) {
+				a = substr($0, RSTART, RLENGTH - 1); sub(/.*:/, "", a); port[k] = a }
+			next }
 		/ikev2-cp/ {
 			name = val("CN"); if (name == "") next
 			ip = ""; if (match($0, /\][ ]+[0-9A-Fa-f.:]+,/)) { ip = substr($0, RSTART + 1, RLENGTH - 2); gsub(/ /, "", ip) }
@@ -73,7 +79,8 @@ ikev2_sas() {
 					all = all (all == "" ? "" : ",") a; if (lease == "" && a ~ /\./) lease = a }
 				if (lease == "") lease = L[1]; sub(/\/.*/, "", lease)
 			}
-			printf "%s\t%s\t%s\t%.0f\t%.0f\t%.0f\t%s\n", name, (ip == "" ? "-" : ip), (lease == "" ? "-" : lease), val("inBytes"), val("outBytes"), val("add_time"), (all == "" ? "-" : all)
+			k = inst(); p = (k in port) ? port[k] : "-"
+			printf "%s\t%s\t%s\t%.0f\t%.0f\t%.0f\t%s\t%s\n", name, (ip == "" ? "-" : ip), (lease == "" ? "-" : lease), val("inBytes"), val("outBytes"), val("add_time"), (all == "" ? "-" : all), p
 		}'
 }
 

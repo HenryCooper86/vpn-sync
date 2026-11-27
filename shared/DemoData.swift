@@ -99,6 +99,9 @@ enum DemoData {
         counter(up ? d.up : d.down, d.phase, at: onlineClock(d, t), from: onlineClock(d, origin(t)))
     }
 
+    /// A made-up source port for a demo device.
+    static func demoPort(_ i: Int) -> Int { 49_152 + (i * 7_919) % 16_000 }
+
     static func vpnIP(_ s: Server, _ i: Int, _ d: Device) -> String {
         switch d.vpn {
         case "OpenVPN": return "10.8.0.\(i + 2)"
@@ -123,17 +126,20 @@ enum DemoData {
             switch d.vpn {
             case "OpenVPN" where on:
                 let ft = Double(fileTime)
-                out.append("OVPN\t\(d.name)\t\(d.ip)\t\(vpnIP(s, i, d))\t\(deviceCounter(d, up: true, at: ft))\t\(deviceCounter(d, up: false, at: ft))\t\(ti - 5_400 - i * 600)")
+                out.append("OVPN\t\(d.name)\t\(d.ip)\t\(vpnIP(s, i, d))\t\(deviceCounter(d, up: true, at: ft))\t\(deviceCounter(d, up: false, at: ft))\t\(ti - 5_400 - i * 600)\t\(demoPort(i))")
             case "WireGuard":
                 // offline peers keep their last handshake (minutes or days ago)
                 let hs = on ? ti - 20 - i * 7 : (d.presence > 0 ? ti - 200 - i * 30 : ti - 3 * 86_400 - i * 3_600)
-                out.append("WG\t\(d.name)\t\(on ? d.ip : "-")\t\(vpnIP(s, i, d))\t\(rx)\t\(tx)\t\(hs)")
+                out.append("WG\t\(d.name)\t\(on ? d.ip : "-")\t\(vpnIP(s, i, d))\t\(rx)\t\(tx)\t\(hs)\t\(on ? String(demoPort(i)) : "-")")
             case "IKEv2" where on:
-                out.append("IKE\t\(d.name)\t\(d.ip)\t\(vpnIP(s, i, d))\t\(rx)\t\(tx)\t\(ti - 2_700)")
+                out.append("IKE\t\(d.name)\t\(d.ip)\t\(vpnIP(s, i, d))\t\(rx)\t\(tx)\t\(ti - 2_700)\t4500")
             default: break
             }
         }
         if full {
+            out += ["PORT\topenvpn\ttcp\t443", "PORT\twireguard\tudp\t51820"]
+            if s.ipsec { out += ["PORT\tipsec\tudp\t500", "PORT\tipsec\tudp\t4500"] }
+            out.append("PORT\tssh\ttcp\t22")
             out += usage(name, at: now)
             let today = s.devices.reduce(0.0) { $0 + Double(deviceCounter($1, up: false, at: t) + deviceCounter($1, up: true, at: t)) } + 7.2e9
             let month = today + s.devices.reduce(0.0) { $0 + $1.monthMB * 1_048_576 }

@@ -133,6 +133,7 @@ struct DeviceSheet: View {
                         }
                     }
                 }
+                connectionSection(n)
                 usageSection(n)
                 profilesSection
                 Section {
@@ -155,6 +156,28 @@ struct DeviceSheet: View {
             .onDisappear { Profiles.clear() }
         }
         .presentationDetents([.large])
+    }
+
+    /// Each VPN it's connected on: the server port it reaches and its own address and port.
+    @ViewBuilder private func connectionSection(_ n: String) -> some View {
+        let conns = live.connections(n)
+        if !conns.isEmpty {
+            Section {
+                ForEach(conns, id: \.vpn) { c in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text(c.vpn).font(.subheadline.weight(.semibold))
+                            Spacer()
+                            if let s = c.server { Text("server \(s)").font(.caption).foregroundStyle(.secondary).monospacedDigit() }
+                        }
+                        Text("From \(c.from)").font(.subheadline).monospacedDigit().textSelection(.enabled)
+                        if let ip = c.vpnIP { Text("VPN address \(ip)").font(.caption).foregroundStyle(.secondary) }
+                    }
+                }
+            } header: { Text("Connection") } footer: {
+                Text("“From” is the device's own address and port as the server sees it; behind a router or mobile network that's the router's.")
+            }
+        }
     }
 
     @ViewBuilder private func usageSection(_ n: String) -> some View {
