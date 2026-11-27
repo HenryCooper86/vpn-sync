@@ -9,20 +9,27 @@ the phone to a VPN stays in the WireGuard / OpenVPN apps and iOS Settings (IKEv2
 - **Servers:** every imported server with its services (OpenVPN, WireGuard, IPsec), how many
   devices are online, a 15-minute speed sparkline and limit attention (paused / near a limit).
 - **Server:** Devices · Traffic · Activity, like the Mac.
-  - Devices: who's online (live, from `vpn-status --watch`), how and from where, speed, usage
-    today / this month, the limit meter, Paused badge.
-  - Device sheet: Pause/Resume Internet, Set/Edit/Remove Usage Limit, profiles (WireGuard QR
+  - Above the tabs: the server's ports (OpenVPN, WireGuard, IKEv2, SSH) and the Check Profiles
+    card: whether the profiles use the server's current IP (Update Profiles runs
+    `vpn-endpoint-sync`), and the devices added, removed or given new profiles since the last
+    check (from `vpn-export-profiles --hashes`; the fingerprints are kept on the phone).
+  - Devices: who's online (live, from `vpn-status --watch`), how and from where (address and
+    port), speed, usage today / this month, the limit meter, Paused badge.
+  - Device sheet: its connection on each VPN (the server port, its own address and port, its VPN
+    address), Pause/Resume Internet, Set/Edit/Remove Usage Limit, profiles (WireGuard QR
     full screen; share or save the `.conf`, `.ovpn`, `.mobileconfig`, `.sswan`, `.p12`),
     Remove Device (confirm).
   - Traffic: speed chart (download above, upload below), today's VPN data, server traffic per
     day (vnstat), data per device this month (server-side counts).
   - Activity: connects/disconnects and limit events while the app is open.
-  - Toolbar: Add Device; services menu (start/stop/restart each VPN, reboot, with confirmation).
+  - Toolbar: Add Device; services menu (start/stop/restart each VPN, reboot, with confirmation;
+    Stop/Start Server on Lightsail when the export included the Lightsail key).
 - **Settings:** import servers, Face ID lock (on by default), warning level, remove a server.
 
 Not in v1: background notifications (iOS gives no background time for a live SSH stream),
-setting up new servers (`server install`), adding servers by hand, Lightsail IP lookup (the
-phone uses the last known IP, then the jump server; a Mac sync updates it).
+setting up new servers (`server install`), changing ports, adding servers by hand. With the
+Lightsail key the phone finds a stopped-and-started server's new IP itself; without it, a check
+or a Mac sync updates it.
 
 ## Connection
 
@@ -31,13 +38,14 @@ phone uses the last known IP, then the jump server; a Mac sync updates it).
   what both servers use; anything else is reported as unsupported.
 - **Host keys are pinned:** the import carries each server's pinned key from
   `~/.config/vpn-sync/known_hosts`; a different key refuses the connection.
-- **Order:** last known IP, the configured host, then through the jump server (a direct-tcpip
-  channel to the private IP, with a second SSH session inside it).
+- **Order:** through the jump server first when the server has one (a direct-tcpip channel to the
+  private IP, with a second SSH session inside it), then the last known IP, then the configured
+  host. One connection per server is shared by the live stream and every command.
 - **Commands:** exactly the Mac CLI's remote commands, with `sudo -n` when the user isn't root:
   `vpn-status --watch 3` (one stream per server while the app is open), `vpn-usage report |
   limit | pause | resume`, `vpn-service`, `vpn-add-client`, `vpn-remove-client`,
-  `vpn-endpoint-sync`, and `vpn-export-profiles --device NAME` (new: one device's files as an
-  uncompressed tar).
+  `vpn-endpoint-sync [--dry-run]`, `vpn-export-profiles --device NAME` (one device's files as an
+  uncompressed tar) and `vpn-export-profiles --hashes`.
 
 ## Getting servers onto the phone
 

@@ -1172,8 +1172,14 @@ struct ContentView: View {
             } else {
                 GlassGroup(spacing: 6) {
                     HStack(spacing: 6) {
-                        Button { m.showAddDevice = true } label: { Label("Add Device", lucide: "plus") }
-                            .glassButton(prominent: true)
+                        // the full label when it fits, otherwise "Add" (never squeezed to "…")
+                        ViewThatFits(in: .horizontal) {
+                            Button { m.showAddDevice = true } label: { Label("Add Device", lucide: "plus").fixedSize() }
+                                .glassButton(prominent: true)
+                            Button { m.showAddDevice = true } label: { Label("Add", lucide: "plus").fixedSize() }
+                                .glassButton(prominent: true)
+                                .help("Add Device")
+                        }
                         Button { m.showBatchAdd = true } label: { Label("Batch Add", lucide: "copy-plus") }
                             .labelStyle(.iconOnly).glassButton()
                             .help("Add several devices at once")
@@ -1297,9 +1303,17 @@ struct ContentView: View {
                     }
                     .frame(maxWidth: .infinity, minHeight: 140)
                 } else if visibleRows.count <= 7 {
-                    // A short list hugs its rows instead of leaving an empty glass expanse.
-                    VStack(spacing: 2) { ForEach(visibleRows) { d in DeviceRow(device: d) } }
-                        .padding(6)
+                    // A short list hugs its rows instead of leaving an empty glass expanse, and
+                    // scrolls when it doesn't fit (a banner above, or a short window).
+                    ViewThatFits(in: .vertical) {
+                        VStack(spacing: 2) { ForEach(visibleRows) { d in DeviceRow(device: d) } }
+                            .padding(6)
+                        ScrollView {
+                            VStack(spacing: 2) { ForEach(visibleRows) { d in DeviceRow(device: d) } }
+                                .padding(6)
+                        }
+                        .frame(maxHeight: .infinity)
+                    }
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 2) {
