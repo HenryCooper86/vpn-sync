@@ -1,3 +1,5 @@
+English | [简体中文](README.zh-CN.md)
+
 <p align="center">
   <img src="https://github.com/HenryCooper86.png?size=240" width="104" height="104" alt="VPN Sync">
 </p>
