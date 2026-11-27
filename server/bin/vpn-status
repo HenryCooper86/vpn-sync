@@ -115,21 +115,45 @@ except Exception:
 }
 
 devinfo() { # platform/app each OpenVPN client reported (IV_PLAT / IV_GUI_VER), newest wins
+	# Reading 30 days of the journal takes seconds on a busy server, so the answer is kept in
+	# /var/lib/vpn-sync/devinfo.tsv with a journal cursor; later calls read only what's new.
 	command -v journalctl >/dev/null || return 0
-	journalctl -u openvpn-server@server --since -30d -o cat --no-pager -q 2>/dev/null \
-		| grep -E "peer info: IV_(PLAT|GUI_VER)=|Peer Connection Initiated" | awk '
-		# "1.2.3.4:5678 peer info: IV_PLAT=ios"  or  "name/1.2.3.4:5678 peer info: IV_PLAT=ios"
-		/peer info: IV_/ {
-			src=$1; val=$0; sub(/.*peer info: /,"",val); split(val, kv, "=")
-			if (index(src, "/")) { split(src, p, "/"); nm=p[1]; if (kv[1]=="IV_PLAT") plat[nm]=kv[2]; else app[nm]=kv[2] }
-			else { if (kv[1]=="IV_PLAT") pp[src]=kv[2]; else pa[src]=kv[2] }
-			next }
-		# "1.2.3.4:5678 [name] Peer Connection Initiated with ..."
-		/Peer Connection Initiated/ && match($0, /\[[^]]+\] Peer Connection/) {
-			nm=substr($0, RSTART+1, RLENGTH-18); src=$1
-			if (src in pp) plat[nm]=pp[src]
-			if (src in pa) app[nm]=pa[src] }
-		END { for (n in plat) print "DEVINFO\t"n"\t"plat[n]"\t"(n in app ? app[n] : "-") }'
+	local dir=/var/lib/vpn-sync cache cur
+	cache=$dir/devinfo.tsv cur=$dir/devinfo.cursor
+	mkdir -p "$dir"
+	(
+		flock -w 20 9 || exit 0
+		local since=(--since -30d)
+		[[ -s "$cur" && -f "$cache" ]] && since=() || { rm -f "$cur"; : > "$cache"; }
+		journalctl -u openvpn-server@server "${since[@]}" --cursor-file="$cur" -o cat --no-pager -q 2>/dev/null \
+			| grep -E "peer info: IV_(PLAT|GUI_VER)=|Peer Connection Initiated" \
+			| awk -F'\t' -v cachefile="$cache" '
+			BEGIN {   # what earlier runs found, and peer info still waiting for its connection line
+				while ((getline line < cachefile) > 0) {
+					split(line, c, "\t")
+					if (c[1] == "DEVINFO") { plat[c[2]] = c[3]; if (c[4] != "-") app[c[2]] = c[4] }
+					else if (c[1] == "PEND") { if (c[3] == "P") pp[c[2]] = c[4]; else pa[c[2]] = c[4] }
+				}
+				close(cachefile); FS = " " }
+			# "1.2.3.4:5678 peer info: IV_PLAT=ios"  or  "name/1.2.3.4:5678 peer info: IV_PLAT=ios"
+			/peer info: IV_/ {
+				src=$1; val=$0; sub(/.*peer info: /,"",val); split(val, kv, "=")
+				if (index(src, "/")) { split(src, p, "/"); nm=p[1]; if (kv[1]=="IV_PLAT") plat[nm]=kv[2]; else app[nm]=kv[2] }
+				else { if (kv[1]=="IV_PLAT") pp[src]=kv[2]; else pa[src]=kv[2] }
+				next }
+			# "1.2.3.4:5678 [name] Peer Connection Initiated with ..."
+			/Peer Connection Initiated/ && match($0, /\[[^]]+\] Peer Connection/) {
+				nm=substr($0, RSTART+1, RLENGTH-18); src=$1
+				if (src in pp) { plat[nm]=pp[src]; delete pp[src] }
+				if (src in pa) { app[nm]=pa[src]; delete pa[src] } }
+			END {
+				for (n in plat) print "DEVINFO\t"n"\t"plat[n]"\t"(n in app ? app[n] : "-")
+				for (s in pp) print "PEND\t"s"\tP\t"pp[s]
+				for (s in pa) print "PEND\t"s"\tA\t"pa[s]
+			}' > "$cache.new" || true   # grep finds nothing when there's nothing new: awk still wrote the cache
+		mv -f "$cache.new" "$cache"
+		grep '^DEVINFO' "$cache" || true
+	) 9>"$dir/devinfo.lock"
 }
 
 usage() { [[ -x /usr/local/sbin/vpn-usage ]] && /usr/local/sbin/vpn-usage report 2>/dev/null; return 0; }

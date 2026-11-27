@@ -152,10 +152,26 @@ import_key() { # import_key SERVER FILE -> prints stored path
 
 # ---------------------------------------------------------------- ssh plumbing
 
+# Connection sharing: the first SSH connection to a server stays open for 2 minutes (or as long as
+# something uses it, like the app's live view) and later commands run over it, which saves a
+# full handshake (over a second to a far server, twice through a jump server) on every command.
+# The sockets live in a folder only this user can open; VPNSYNC_NO_MUX=1 turns sharing off.
+mux_dir() {
+	[ "${VPNSYNC_NO_MUX:-0}" = 1 ] && return 1
+	# short: a socket path (this + 40 + the 17 characters ssh adds while creating it) must fit in 104
+	local d="/tmp/vpnsync-$(id -u)"
+	if [ ! -d "$d" ]; then mkdir -m 700 "$d" 2>/dev/null || return 1; fi
+	[ -O "$d" ] && [ "$(stat -f %Lp "$d" 2>/dev/null)" = 700 ] || return 1
+	printf '%s' "$d"
+}
+MUX_DIR=$(mux_dir || true)
+
 base_ssh_opts() { # for the loaded server; prints nothing, sets SSH_OPTS array
 	SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=7 -o IdentitiesOnly=yes -i "$S_KEY" -p "$S_PORT"
 		-o HostKeyAlias="$S_ALIAS" -o UserKnownHostsFile="$KNOWN_HOSTS" -o StrictHostKeyChecking=yes
-		-o ServerAliveInterval=20 -o LogLevel=ERROR)
+		-o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o LogLevel=ERROR)
+	[ -n "$MUX_DIR" ] && SSH_OPTS+=(-o ControlMaster=auto -o ControlPath="$MUX_DIR/%C" -o ControlPersist=120)
+	return 0
 }
 
 jump_proxy() { # jump_proxy JUMPSERVER -> ProxyCommand string through that server's best address
@@ -163,8 +179,10 @@ jump_proxy() { # jump_proxy JUMPSERVER -> ProxyCommand string through that serve
 	( load_server "$j"
 	  addr="$S_LAST"; [ -n "$addr" ] || addr="$S_HOST"
 	  [ -n "$addr" ] || exit 1
-	  printf 'ssh -o BatchMode=yes -o ConnectTimeout=7 -o IdentitiesOnly=yes -i %s -p %s -o HostKeyAlias=%s -o UserKnownHostsFile=%s -o StrictHostKeyChecking=yes -o LogLevel=ERROR -W %%h:%%p %s@%s' \
-		"$S_KEY" "$S_PORT" "$S_ALIAS" "$KNOWN_HOSTS" "$S_USER" "$addr" )
+	  # reuses the jump server's shared connection when there is one (never starts one: -W can't)
+	  local mux=""; [ -n "$MUX_DIR" ] && mux="-o ControlMaster=no -o ControlPath=$MUX_DIR/%%C "   # %% : ProxyCommand expands % itself
+	  printf 'ssh -o BatchMode=yes -o ConnectTimeout=7 -o IdentitiesOnly=yes -i %s -p %s -o HostKeyAlias=%s -o UserKnownHostsFile=%s -o StrictHostKeyChecking=yes -o LogLevel=ERROR %s-W %%h:%%p %s@%s' \
+		"$S_KEY" "$S_PORT" "$S_ALIAS" "$KNOWN_HOSTS" "$mux" "$S_USER" "$addr" )
 }
 
 # ssh_run MODE ADDR CMD...   MODE: direct | jump
@@ -367,20 +385,23 @@ connect() {
 	if [ -n "$forced" ]; then
 		cands="direct:$forced"
 	else
-		if [ -n "$S_REGION" ] && [ -z "$S_JUMP" ]; then
-			aws_ip=$(lightsail_ip "$S_REGION" "$S_INSTANCE" 2>/dev/null || true)
-			if [[ "$aws_ip" =~ $IPV4_RE ]]; then
-				[ "$aws_ip" != "$S_LAST" ] && [ -n "$S_LAST" ] && info "  Lightsail reports a new IP for $S_NAME: $aws_ip (was $S_LAST)"
-				cands="$cands direct:$aws_ip"
-			fi
-		fi
+		# the last address first: the pinned host key proves it's still this server, so asking
+		# Lightsail (another second) is only needed when it doesn't answer
 		[ -n "$S_JUMP" ] && [ -n "$S_PRIVATE_IP" ] && cands="$cands jump:$S_PRIVATE_IP"
 		[ -n "$S_LAST" ] && cands="$cands direct:$S_LAST"
 		[ -n "$S_HOST" ] && cands="$cands direct:$S_HOST"
+		cands="$cands lightsail"
 		for c in $S_TUNNELS; do cands="$cands direct:$c"; done
 	fi
 	VIA_MODE="" VIA_ADDR=""
 	for c in $cands; do
+		if [ "$c" = lightsail ]; then
+			[ -n "$S_REGION" ] && [ -z "$S_JUMP" ] || continue
+			aws_ip=$(lightsail_ip "$S_REGION" "$S_INSTANCE" 2>/dev/null || true)
+			[[ "$aws_ip" =~ $IPV4_RE ]] || continue
+			[ "$aws_ip" != "$S_LAST" ] && [ -n "$S_LAST" ] && info "  Lightsail reports a new IP for $S_NAME: $aws_ip (was $S_LAST)"
+			c="direct:$aws_ip"
+		fi
 		case " $tried " in *" $c "*) continue ;; esac
 		tried="$tried $c"
 		mode="${c%%:*}" addr="${c#*:}"

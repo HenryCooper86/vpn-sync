@@ -164,7 +164,8 @@ final class ServerLive: ObservableObject, Identifiable {
             link = .connecting
             do {
                 let conn = try await store.connection(name)
-                await refreshDevices()
+                // the device list comes alongside the live stream, not before it
+                Task { await self.refreshDevices() }
                 parser = SnapshotParser()
                 for try await line in conn.lines(store.sudo(name) + "/usr/local/sbin/vpn-status --watch 3") {
                     if let snap = parser.feed(line) {

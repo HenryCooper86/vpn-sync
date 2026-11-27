@@ -123,8 +123,9 @@ final class Store: ObservableObject {
 
     // MARK: connections
 
-    /// The open connection to a server: last known IP, then its configured host, then through
-    /// its jump server. A host key that doesn't match the pinned one stops right there.
+    /// The open connection to a server: through its jump server first when it has one (like the
+    /// Mac: such servers usually don't answer SSH from outside), then its last known IP, then its
+    /// configured host. A host key that doesn't match the pinned one stops right there.
     func connection(_ name: String) async throws -> SSHConnection {
         if let c = connections[name], c.isActive { return c }
         if let t = connecting[name] { return try await t.value }
@@ -147,16 +148,20 @@ final class Store: ObservableObject {
         var lastError: Error = SSHError.closed
         var hosts: [String] = []
         for h in [s.lastIP, s.host].compactMap({ $0 }) where !hosts.contains(h) { hosts.append(h) }
+        if let j = s.jump, j != name, let ip = s.privateIP, server(j) != nil {
+            do {
+                let via = try await connection(j)
+                return try await SSHConnection.connect(SSHEndpoint(host: ip, port: s.port, user: s.user, key: key, hostKey: s.hostKey), through: via)
+            } catch SSHError.hostKeyMismatch {
+                throw SSHError.hostKeyMismatch
+            } catch { lastError = error }
+        }
         for h in hosts {
             do {
                 return try await SSHConnection.connect(SSHEndpoint(host: h, port: s.port, user: s.user, key: key, hostKey: s.hostKey))
             } catch SSHError.hostKeyMismatch {
                 throw SSHError.hostKeyMismatch
             } catch { lastError = error }
-        }
-        if let j = s.jump, j != name, let ip = s.privateIP, server(j) != nil {
-            let via = try await connection(j)
-            return try await SSHConnection.connect(SSHEndpoint(host: ip, port: s.port, user: s.user, key: key, hostKey: s.hostKey), through: via)
         }
         throw lastError
     }

@@ -145,7 +145,7 @@ Run `vpn-sync --help` for everything. On a server, `sudo vpn-usage show` prints 
 
 | Where | What |
 |---|---|
-| `vpn-sync` | The Mac command. Finds each server (`--ip`, the AWS CLI, last IP, configured host, jump server, VPN tunnel addresses) and always connects over SSH with a pinned host key. |
+| `vpn-sync` | The Mac command. Finds each server (`--ip`, jump server, last IP, configured host, then Lightsail, VPN tunnel addresses) and always connects over SSH with a pinned host key, sharing one connection per server so commands don't pay a new handshake each time. |
 | `app/` | The Mac app (SwiftUI). Runs `vpn-sync`; logs every command to `~/.config/vpn-sync/history.log`. |
 | `ios/` | The iPhone app (SwiftUI). Its own SSH client on Apple's swift-nio-ssh: Ed25519 keys, pinned host keys, jump servers. Notes in `docs/ios-app.md`. |
 | `shared/` | Code both apps compile: the live-stream and usage models, the encrypted export, demo data. |
