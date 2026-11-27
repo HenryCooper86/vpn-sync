@@ -534,6 +534,15 @@ struct DeviceRow: View {
                 Text(kindLine).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 LiveLine(name: device.name)
                 UsageLine(name: device.name)
+                if let p = m.pauseInfo(device.name) {
+                    HStack(spacing: 8) {
+                        Text(p.label).font(.caption).foregroundStyle(.orange).lineLimit(1)
+                        Button("Resume") { Task { await m.setPaused(device.name, false) } }
+                            .controlSize(.small).glassButton()
+                            .disabled(m.busy)
+                            .help("Give \(device.name) its internet back")
+                    }
+                }
             }
             Spacer(minLength: 8)
             if m.isOnline(device.name) {
@@ -574,14 +583,7 @@ struct DeviceRow: View {
                     }
                     Button(m.isPinned(device.name) ? "Unpin" : "Pin to Top") { m.togglePin(device.name) }
                     Divider()
-                    if m.pauseInfo(device.name) != nil {
-                        Button("Resume Internet") { Task { await m.setPaused(device.name, false) } }.disabled(m.busy)
-                    } else {
-                        Button("Pause Internet") { Task { await m.setPaused(device.name, true) } }.disabled(m.busy)
-                    }
-                    Button(m.usageLimit(device.name) == nil ? "Set Usage Limit…" : "Edit Usage Limit…") {
-                        m.limitTarget = LimitTarget(server: m.server, device: device.name)
-                    }
+                    LimitMenuItems(m: m, server: m.server, name: device.name)
                     Divider()
                     Button("Show in Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting([device.ovpn, device.wg].compactMap { $0 })
@@ -796,6 +798,8 @@ struct ContentView: View {
     @EnvironmentObject var m: Model
     @Environment(\.theme) private var theme
     @State private var showActivity = true
+    /// Devices tab: show only devices with a usage limit or a pause.
+    @State private var limitedOnly = ProcessInfo.processInfo.environment["VPNSYNC_LIMITED_ONLY"] != nil
     /// Starting tab (test hook VPNSYNC_TAB=traffic|activity, for screenshots).
     @State private var tab: MainTab = {
         switch ProcessInfo.processInfo.environment["VPNSYNC_TAB"] {
@@ -1146,7 +1150,46 @@ struct ContentView: View {
         .sheet(isPresented: $m.showBatchAdd) { BatchAddSheet().environmentObject(m) }
     }
 
+    /// Devices on the selected server with a usage limit or a pause.
+    private var limitNames: Set<String> {
+        guard let u = m.usage else { return [] }
+        return Set(u.limits.keys).union(u.paused.keys)
+    }
+
+    /// The list as shown: everything, or only limited and paused devices.
+    private var visibleRows: [Device] {
+        let names = limitNames
+        guard limitedOnly, !names.isEmpty else { return rows }
+        return rows.filter { names.contains($0.name) }
+    }
+
+    /// "2 usage limits, 1 paused, 1 at 80% or more" over the device list, with a filter.
+    @ViewBuilder private var limitBar: some View {
+        if let u = m.usage, !limitNames.isEmpty, !m.selecting {
+            let near = u.limits.filter { n, l in
+                u.paused[n] == nil && (l.tightest(u.usage[n] ?? DeviceUsage())?.fraction ?? 0) >= 0.8
+            }.count
+            let parts = [u.limits.isEmpty ? nil : "\(u.limits.count) usage limit\(u.limits.count == 1 ? "" : "s")",
+                         u.paused.isEmpty ? nil : "\(u.paused.count) paused",
+                         near == 0 ? nil : "\(near) at 80% or more"].compactMap { $0 }
+            HStack(spacing: 8) {
+                LucideIcon("gauge", size: 13)
+                    .foregroundStyle(u.paused.isEmpty && near == 0 ? Color.secondary : Color.orange)
+                Text(parts.joined(separator: ", ")).font(.callout).monospacedDigit()
+                Spacer(minLength: 8)
+                Button(limitedOnly ? "Show All Devices" : "Show Only These") {
+                    withAnimation(.snappy) { limitedOnly.toggle() }
+                }
+                .controlSize(.small).glassButton()
+                .help(limitedOnly ? "Show every device on \(m.server)" : "Show only devices with a usage limit or a pause")
+            }
+            .padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 4)
+        }
+    }
+
     @ViewBuilder private var devicesList: some View {
+        VStack(spacing: 0) {
+            limitBar
             Group {
                 if m.desktopWaiting {
                     VStack(spacing: 6) {
@@ -1168,21 +1211,22 @@ struct ContentView: View {
                         .disabled(m.server.isEmpty || m.busy)
                     }
                     .frame(maxWidth: .infinity, minHeight: 140)
-                } else if rows.count <= 7 {
+                } else if visibleRows.count <= 7 {
                     // A short list hugs its rows instead of leaving an empty glass expanse.
-                    VStack(spacing: 2) { ForEach(rows) { d in DeviceRow(device: d) } }
+                    VStack(spacing: 2) { ForEach(visibleRows) { d in DeviceRow(device: d) } }
                         .padding(6)
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 2) {
-                            ForEach(rows) { d in DeviceRow(device: d) }
+                            ForEach(visibleRows) { d in DeviceRow(device: d) }
                         }
                         .padding(6)
                     }
                     .frame(maxHeight: .infinity)
                 }
             }
-            .glassPanel(24)
+        }
+        .glassPanel(24)
     }
 
     private var activitySection: some View {

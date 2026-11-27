@@ -286,16 +286,16 @@ struct LimitMenuItems: View {
     var body: some View {
         let u = m.usageByServer[server]
         if u?.paused[name] != nil {
-            Button("Resume Internet") { Task { await m.setPaused(name, false, server: server) } }
+            Button("Resume Internet") { Task { await m.setPaused(name, false, server: server) } }.disabled(m.busy)
         } else {
-            Button("Pause Internet") { Task { await m.setPaused(name, true, server: server) } }
+            Button("Pause Internet") { Task { await m.setPaused(name, true, server: server) } }.disabled(m.busy)
         }
         Button(u?.limits[name] == nil ? "Set Usage Limit…" : "Edit Usage Limit…") {
             beforeEdit()
             m.limitTarget = LimitTarget(server: server, device: name)
         }
         if u?.limits[name] != nil {
-            Button("Remove Limit") { Task { _ = await m.saveLimit(name, server: server, nil) } }
+            Button("Remove Limit") { Task { _ = await m.saveLimit(name, server: server, nil) } }.disabled(m.busy)
         }
     }
 }
