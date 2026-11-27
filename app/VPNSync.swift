@@ -281,7 +281,7 @@ final class Model: ObservableObject {
 
     // MARK: add / remove
 
-    /// Adds (or removes) devices on both VPNs, then syncs. Returns an error message, or nil on success.
+    /// Adds (or removes) devices on every VPN, then syncs. Returns an error message, or nil on success.
     func changeDevices(adding: Bool, _ names: [String]) async -> String? {
         guard !busy else { return "Another operation is still running. Try again in a moment." }
         guard cliInstalled else { return "vpn-sync is not installed at \(cliURL.path)" }
@@ -690,7 +690,7 @@ struct AddDeviceSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Add Device").font(.system(size: 22, weight: .bold, design: .rounded))
-            Text("Creates an OpenVPN and a WireGuard profile for one device on \(m.server), copies them to your Desktop and shows the QR code.")
+            Text("Creates a profile for every VPN on \(m.server) for one device, copies them to your Desktop and shows the WireGuard QR code.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             TextField("Device name, e.g. laptop", text: $name)
@@ -754,7 +754,7 @@ struct BatchAddSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Batch Add Devices").font(.system(size: 22, weight: .bold, design: .rounded))
-            Text("One name per line (or separated by commas). Each device gets an OpenVPN and a WireGuard profile on \(m.server).")
+            Text("One name per line (or separated by commas). Each device gets a profile for every VPN on \(m.server).")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 

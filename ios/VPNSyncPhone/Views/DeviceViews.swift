@@ -6,6 +6,11 @@ import CoreImage.CIFilterBuiltins
 struct DevicesList: View {
     @ObservedObject var live: ServerLive
     @Binding var selected: DeviceInfo?
+    /// Select mode (for removing several): tapping a row ticks it instead of opening it.
+    var selecting = false
+    @Binding var selection: Set<String>
+    var onPause: (String, Bool) -> Void = { _, _ in }
+    var onRemove: ([String]) -> Void = { _ in }
 
     var body: some View {
         let list = live.allDevices
@@ -15,8 +20,34 @@ struct DevicesList: View {
         } else {
             VStack(spacing: 0) {
                 ForEach(Array(list.enumerated()), id: \.element.id) { i, d in
-                    Button { selected = d } label: { DeviceRow(device: d, live: live) }
-                        .buttonStyle(.plain)
+                    Button {
+                        if selecting {
+                            if selection.contains(d.name) { selection.remove(d.name) } else { selection.insert(d.name) }
+                        } else { selected = d }
+                    } label: {
+                        HStack(spacing: 0) {
+                            if selecting {
+                                Image(systemName: selection.contains(d.name) ? "checkmark.circle.fill" : "circle")
+                                    .font(.title3).foregroundStyle(selection.contains(d.name) ? Color.accentColor : .secondary)
+                                    .padding(.leading, 8)
+                                    .accessibilityLabel(selection.contains(d.name) ? "Selected" : "Not selected")
+                            }
+                            DeviceRow(device: d, live: live, showChevron: !selecting)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu {
+                        if !selecting {
+                            Button("Open", systemImage: "info.circle") { selected = d }
+                            if live.usage?.paused[d.name] != nil {
+                                Button("Resume Internet", systemImage: "play") { onPause(d.name, false) }
+                            } else {
+                                Button("Pause Internet", systemImage: "pause") { onPause(d.name, true) }
+                            }
+                            Divider()
+                            Button("Remove \(d.name)…", systemImage: "trash", role: .destructive) { onRemove([d.name]) }
+                        }
+                    }
                     if i < list.count - 1 { Divider().padding(.leading, 56) }
                 }
             }
@@ -28,6 +59,7 @@ struct DevicesList: View {
 struct DeviceRow: View {
     let device: DeviceInfo
     @ObservedObject var live: ServerLive
+    var showChevron = true
 
     var body: some View {
         let n = device.name, online = live.isOnline(n)
@@ -50,7 +82,7 @@ struct DeviceRow: View {
                 }
                 .font(.caption2.weight(.medium)).monospacedDigit().labelStyle(.titleAndIcon)
             }
-            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            if showChevron { Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary) }
         }
         .padding(.vertical, 8).padding(.horizontal, 8)
         .contentShape(Rectangle())
@@ -343,60 +375,90 @@ struct LimitSheet: View {
     }
 }
 
-// MARK: - Add device
+// MARK: - Add devices
 
+/// One name, several (commas, spaces or new lines), or a generated series (phone1…phone5).
 struct AddDeviceSheet: View {
     @EnvironmentObject var store: Store
     @Environment(\.dismiss) private var dismiss
     let server: String
     @ObservedObject var live: ServerLive
-    @State private var name = ""
+    @State private var text = ""
+    @State private var prefix = "device"
+    @State private var start = 1
+    @State private var count = 5
     @State private var working = false
     @State private var error: String?
     @FocusState private var focused: Bool
 
-    private var problem: String? {
-        if name.isEmpty { return nil }
-        if name.range(of: #"^[A-Za-z0-9_-]{1,15}$"#, options: .regularExpression) == nil { return "Use 1–15 letters, numbers, - or _." }
-        if live.devices.contains(where: { $0.name == name }) { return "\(name) already exists." }
-        return nil
+    private var names: [String] { text.components(separatedBy: CharacterSet(charactersIn: ", \n\t")).filter { !$0.isEmpty } }
+
+    private var problems: [String] {
+        let existing = Set(live.allDevices.map(\.name))
+        var seen = Set<String>(), out: [String] = []
+        for n in names {
+            if seen.contains(n) { out.append("\(n) is listed twice.") }
+            seen.insert(n)
+            if n.range(of: #"^[A-Za-z0-9_-]{1,15}$"#, options: .regularExpression) == nil { out.append("\(n): use 1–15 letters, numbers, - or _.") }
+            else if existing.contains(n) { out.append("\(n) already exists.") }
+        }
+        if names.count > 50 { out.append("At most 50 devices at a time.") }
+        return out
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("Name, e.g. phone2", text: $name).textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .focused($focused).submitLabel(.done).onSubmit { if !name.isEmpty && problem == nil && !working { add() } }
+                    TextField("Names, e.g. phone2, tv, laptop", text: $text, axis: .vertical)
+                        .lineLimit(1...6)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .focused($focused)
                 } footer: {
-                    Text(problem ?? "Creates the device on every VPN on \(server): OpenVPN, WireGuard\(live.hasIPsec ? " and IKEv2" : ""). Then share its profiles from its page.")
-                        .foregroundStyle(problem == nil ? Color.secondary : .red)
+                    if let p = problems.first { Text(p).foregroundStyle(.red) }
+                    else { Text("One or more names, separated by commas, spaces or new lines. Each device gets a profile for every VPN on \(server): OpenVPN, WireGuard\(live.hasIPsec ? " and IKEv2" : "").") }
                 }
-                if working { HStack { ProgressView(); Text("Creating \(name)… this can take a minute.") } }
+                Section {
+                    TextField("Prefix", text: $prefix).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    Stepper("From \(start)", value: $start, in: 0...999)
+                    Stepper("\(count) device\(count == 1 ? "" : "s")", value: $count, in: 1...50)
+                    Button("Fill In \(prefix)\(start)…\(prefix)\(start + count - 1)") {
+                        text = (start..<(start + count)).map { "\(prefix)\($0)" }.joined(separator: ", ")
+                    }
+                    .disabled(prefix.isEmpty)
+                } header: { Text("Or generate names") }
+                if working {
+                    HStack { ProgressView(); Text("Creating \(names.count) device\(names.count == 1 ? "" : "s")… about 10 seconds each.") }
+                }
                 if let error { Text(error).foregroundStyle(.red) }
             }
-            .navigationTitle("Add Device")
+            .navigationTitle(names.count > 1 ? "Add \(names.count) Devices" : "Add Device")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(working) }
-                ToolbarItem(placement: .confirmationAction) { Button("Add") { add() }.disabled(working || name.isEmpty || problem != nil) }
+                ToolbarItem(placement: .confirmationAction) { Button("Add") { add() }.disabled(working || names.isEmpty || !problems.isEmpty) }
             }
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
         .interactiveDismissDisabled(working)
         .onAppear { focused = true }
     }
 
     private func add() {
+        let list = names
         working = true; error = nil
         Task {
             defer { working = false }
             do {
-                _ = try await store.tool(server, "/usr/local/sbin/vpn-add-client \(name)", timeout: 240)
+                _ = try await store.tool(server, "/usr/local/sbin/vpn-add-client \(list.joined(separator: " "))", timeout: 120 + 60 * list.count)
                 await live.refreshDevices()
-                store.show("Created \(name). Sync on the Mac to copy its profiles to the Desktop.")
+                store.show(list.count == 1 ? "Created \(list[0]). Sync on the Mac to copy its profiles to the Desktop."
+                                           : "Created \(list.count) devices. Sync on the Mac to copy their profiles to the Desktop.")
                 dismiss()
-            } catch { self.error = error.localizedDescription }
+            } catch {
+                await live.refreshDevices()        // some may have been created before the failure
+                self.error = error.localizedDescription
+            }
         }
     }
 }

@@ -12,6 +12,9 @@ struct ServerView: View {
     @State private var adding = false
     @State private var confirm: ServiceAction?
     @State private var busy: String?
+    @State private var selecting = false
+    @State private var selection: Set<String> = []
+    @State private var removing: [String]?
 
     var body: some View {
         ScrollView {
@@ -25,7 +28,9 @@ struct ServerView: View {
                 }
                 .pickerStyle(.segmented)
                 switch tab {
-                case .devices: DevicesList(live: live, selected: $selected)
+                case .devices:
+                    DevicesList(live: live, selected: $selected, selecting: selecting, selection: $selection,
+                                onPause: { n, p in pause(n, p) }, onRemove: { removing = $0 })
                 case .traffic: TrafficSection(live: live)
                 case .activity: ActivitySection(live: live)
                 }
@@ -36,11 +41,19 @@ struct ServerView: View {
         .navigationTitle(name)
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
+            if selecting {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Cancel") { selecting = false; selection = [] }
+                }
+            } else {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("Add Device")
+                Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("Add Devices")
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    Button("Add Devices…", systemImage: "plus") { adding = true }
+                    Button("Select Devices to Remove…", systemImage: "checkmark.circle") { tab = .devices; selecting = true }
+                    Divider()
                     Button("Refresh", systemImage: "arrow.clockwise") { live.restart() }
                     Divider()
                     Button("Restart All VPNs…", systemImage: "arrow.triangle.2.circlepath") { confirm = ServiceAction(server: name, vpn: "all", action: "restart") }
@@ -48,6 +61,30 @@ struct ServerView: View {
                 } label: { Image(systemName: "ellipsis.circle") }
                 .accessibilityLabel("Server actions")
             }
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if selecting {
+                HStack {
+                    Button(selection.count == live.allDevices.count ? "Select None" : "Select All") {
+                        selection = selection.count == live.allDevices.count ? [] : Set(live.allDevices.map(\.name))
+                    }
+                    Spacer()
+                    Button(role: .destructive) { removing = live.allDevices.map(\.name).filter { selection.contains($0) } } label: {
+                        Label("Remove \(selection.count)…", systemImage: "trash")
+                    }
+                    .buttonStyle(.borderedProminent).tint(.red)
+                    .disabled(selection.isEmpty)
+                }
+                .card(22, padding: 12).padding(.horizontal, 16).padding(.bottom, 4)
+            }
+        }
+        .confirmationDialog(removeTitle, isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible) {
+            if let r = removing {
+                Button(r.count == 1 ? "Remove \(r[0])" : "Remove \(r.count) Devices", role: .destructive) { remove(r) }
+            }
+        } message: {
+            Text("Their OpenVPN certificates are revoked, WireGuard peers removed\(live.hasIPsec ? " and IKEv2 certificates revoked" : ""). Their profiles stop working. This can't be undone.")
         }
         .refreshable { live.restart() }
         .sheet(item: $selected) { d in DeviceSheet(server: name, device: d, live: live) }
@@ -117,6 +154,36 @@ struct ServerView: View {
                     }
                 }
             }
+        }
+    }
+
+    private var removeTitle: String {
+        guard let r = removing else { return "" }
+        return r.count == 1 ? "Remove \(r[0])?" : "Remove \(r.count) devices: \(r.prefix(6).joined(separator: ", "))\(r.count > 6 ? "…" : "")?"
+    }
+
+    private func remove(_ names: [String]) {
+        removing = nil
+        busy = names.count == 1 ? "Removing \(names[0])…" : "Removing \(names.count) devices…"
+        Task {
+            defer { busy = nil }
+            do {
+                _ = try await store.tool(name, "/usr/local/sbin/vpn-remove-client \(names.joined(separator: " "))", timeout: 120 + 40 * names.count)
+                store.show(names.count == 1 ? "Removed \(names[0])." : "Removed \(names.count) devices.")
+                selecting = false; selection = []
+            } catch { store.show(error.localizedDescription) }
+            await live.refreshDevices()
+            await live.refreshUsage()
+        }
+    }
+
+    private func pause(_ device: String, _ on: Bool) {
+        Task {
+            do {
+                _ = try await store.tool(name, "/usr/local/sbin/vpn-usage \(on ? "pause" : "resume") \(device)")
+                await live.refreshUsage()
+                store.show(on ? "\(device) is paused: connected, but no internet." : "\(device) is back online.")
+            } catch { store.show(error.localizedDescription) }
         }
     }
 
