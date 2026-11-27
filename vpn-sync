@@ -18,6 +18,14 @@
 #   vpn-sync ports [server...]            the ports each server listens on (VPNs and SSH; the cloud
 #                                         firewall must allow them) and, for each connected device,
 #                                         its VPN, the server port and its own address and port
+#   vpn-sync ports set <server> openvpn <port> [tcp|udp]
+#   vpn-sync ports set <server> wireguard <port>
+#                                         move a VPN to another port: the server's config, firewall
+#                                         rule and every profile; on Lightsail also opens the new port
+#                                         and closes the old one (--no-firewall: leave that to you);
+#                                         then syncs. Devices need their new profiles afterwards.
+#   vpn-sync ports open <server>          allow every VPN port in the Lightsail firewall (install
+#                                         does this too)
 #
 # Services:
 #   vpn-sync service <server> <openvpn|wireguard|ipsec|all> <start|stop|restart|status>
@@ -204,8 +212,8 @@ lightsail_ip() {
 }
 
 # lightsail_call REGION ACTION JSON -> the API's JSON answer (non-zero exit and the reason on
-# stderr on failure). ACTION is GetInstance, StopInstance or StartInstance. Uses the Keychain key,
-# else the AWS CLI if it's configured.
+# stderr on failure). ACTION is GetInstance, StopInstance, StartInstance, GetInstancePortStates,
+# OpenInstancePublicPorts or CloseInstancePublicPorts. Uses the Keychain key, else the AWS CLI.
 lightsail_call() {
 	local region="$1" action="$2" body="$3" id secret out msg
 	id=$(aws_key_id); secret=$(aws_secret)
@@ -216,6 +224,9 @@ lightsail_call() {
 				GetInstance) aws lightsail get-instance --region "$region" --instance-name "$inst" --output json ;;
 				StopInstance) aws lightsail stop-instance --region "$region" --instance-name "$inst" --output json ;;
 				StartInstance) aws lightsail start-instance --region "$region" --instance-name "$inst" --output json ;;
+				GetInstancePortStates) aws lightsail get-instance-port-states --region "$region" --instance-name "$inst" --output json ;;
+				OpenInstancePublicPorts) aws lightsail open-instance-public-ports --region "$region" --cli-input-json "$body" --output json ;;
+				CloseInstancePublicPorts) aws lightsail close-instance-public-ports --region "$region" --cli-input-json "$body" --output json ;;
 			esac
 			return
 		fi
@@ -226,11 +237,15 @@ lightsail_call() {
 		-H "X-Amz-Target: Lightsail_20161128.$action" -H "Content-Type: application/x-amz-json-1.1" \
 		--data "$body" "https://lightsail.$region.amazonaws.com/" 2>&1) || { echo "lightsail: $out" >&2; return 1; }
 	msg=$(printf '%s' "$out" | plutil -extract message raw -o - - 2>/dev/null || printf '%s' "$out" | plutil -extract Message raw -o - - 2>/dev/null || true)
-	if [ -n "$msg" ] && ! printf '%s' "$out" | plutil -extract operations raw -o - - >/dev/null 2>&1 \
-		&& ! printf '%s' "$out" | plutil -extract instance raw -o - - >/dev/null 2>&1; then
+	local ok=0 k
+	for k in operations operation instance portStates; do
+		printf '%s' "$out" | plutil -extract "$k" raw -o - - >/dev/null 2>&1 && ok=1
+	done
+	if printf '%s' "$out" | plutil -extract __type raw -o - - >/dev/null 2>&1 || { [ -n "$msg" ] && [ $ok -eq 0 ]; }; then
+		[ -n "$msg" ] || msg=$(printf '%s' "$out" | plutil -extract __type raw -o - - 2>/dev/null)
 		case "$msg" in
 			*"not authorized"*|*AccessDenied*)
-				echo "lightsail: this key isn't allowed to ${action%Instance} instances. Add lightsail:$action to its IAM policy (Settings → Lightsail shows the policy)." >&2 ;;
+				echo "lightsail: this key isn't allowed to call lightsail:$action. Add it to the key's IAM policy (Settings → Lightsail shows the policy)." >&2 ;;
 			*) echo "lightsail: $msg" >&2 ;;
 		esac
 		return 1
@@ -697,6 +712,7 @@ server_install() {
 	remote "${sudo}bash /tmp/vpn-sync-bundle/install.sh$args; rc=\$?; rm -rf /tmp/vpn-sync-bundle; exit \$rc" </dev/null 2>&1 | prefix_stream || rc=1
 	[ $rc -eq 0 ] || die "install failed on $name"
 	info "  install finished"
+	fw_open_all
 	sync_server "$name"
 }
 
@@ -767,7 +783,161 @@ ports_server() {
 		}' <<< "$snap"
 }
 
-ports_cmd() { # ports_cmd [server...]
+# fw_rule STATES_JSON PROTO PORT: how the Lightsail firewall treats that port. Prints
+#   exact <portInfo JSON>    a rule for exactly this port and protocol (closing it is safe)
+#   covered                  allowed by a wider rule (a range, or all protocols)
+#   closed <portInfo JSON>   not allowed; the JSON opens it to the same sources as the other rules
+fw_rule() {
+	/usr/bin/python3 -c '
+import json, sys
+states = json.load(sys.stdin).get("portStates", [])
+proto, port = sys.argv[1], int(sys.argv[2])
+def info(r):
+    d = {"fromPort": r["fromPort"], "toPort": r["toPort"], "protocol": r["protocol"]}
+    for k in ("cidrs", "ipv6Cidrs"):
+        if r.get(k): d[k] = r[k]
+    return d
+for r in states:
+    if r.get("state", "open") != "open": continue
+    if r["protocol"] == proto and r["fromPort"] == port == r["toPort"]:
+        print("exact", json.dumps(info(r))); sys.exit()
+for r in states:
+    if r.get("state", "open") != "open": continue
+    if r["protocol"] in (proto, "all") and r["fromPort"] <= port <= r["toPort"]:
+        print("covered"); sys.exit()
+v4 = any(r.get("cidrs") for r in states) or not states
+v6 = any(r.get("ipv6Cidrs") for r in states)
+d = {"fromPort": port, "toPort": port, "protocol": proto}
+if v4: d["cidrs"] = ["0.0.0.0/0"]
+if v6: d["ipv6Cidrs"] = ["::/0"]
+print("closed", json.dumps(d))
+' "$2" "$3" <<< "$1"
+}
+
+# fw_open_all: on Lightsail, allow every VPN port the loaded (and connected) server listens on.
+# Never fails: without a key or permission it says what to open by hand.
+fw_open_all() {
+	local snap line vpn proto port rule states P
+	[ -n "$S_REGION" ] || return 0
+	snap=$(remote "$(sudo_prefix)/usr/local/sbin/vpn-status" </dev/null 2>/dev/null) || return 0
+	local want; want=$(awk -F'\t' '$1=="PORT" && $2!="ssh" {print $2, $3, $4}' <<< "$snap")
+	[ -n "$want" ] || return 0
+	if [ -z "$(aws_key_id)" ] && ! { command -v aws >/dev/null 2>&1 && aws configure get aws_access_key_id >/dev/null 2>&1; }; then
+		info "  Lightsail firewall: no key saved; allow these on the instance's Networking tab: $(awk '{printf "%s%s %s", (NR>1?", ":""), toupper($2), $3}' <<< "$want")"
+		return 0
+	fi
+	if ! states=$(fw_states 2>&1); then
+		info "  ! Lightsail firewall: ${states#lightsail: }"
+		info "    allow these on the instance's Networking tab: $(awk '{printf "%s%s %s", (NR>1?", ":""), toupper($2), $3}' <<< "$want")"
+		return 0
+	fi
+	while read -r vpn proto port; do
+		P=$(echo "$proto" | tr a-z A-Z)
+		rule=$(fw_rule "$states" "$proto" "$port")
+		case "$rule" in
+			closed*) if fw_change Open "${rule#closed }"; then info "  Lightsail firewall: opened $P $port ($(case $vpn in openvpn) echo OpenVPN;; wireguard) echo WireGuard;; *) echo IKEv2;; esac))"
+				else info "  ! couldn't open $P $port in the Lightsail firewall; allow it on the instance's Networking tab"; fi ;;
+			*) info "  Lightsail firewall: $P $port already allowed" ;;
+		esac
+	done <<< "$want"
+}
+
+fw_states() { lightsail_call "$S_REGION" GetInstancePortStates "$(printf '{"instanceName":"%s"}' "$S_INSTANCE")"; }
+fw_change() { # fw_change Open|Close PORTINFO_JSON
+	lightsail_call "$S_REGION" "$1InstancePublicPorts" "$(printf '{"instanceName":"%s","portInfo":%s}' "$S_INSTANCE" "$2")" >/dev/null
+}
+
+# ports_set SERVER openvpn|wireguard PORT [tcp|udp] [--no-firewall]
+ports_set() {
+	local name="${1:-}" vpn="${2:-}" port="${3:-}" proto="" fw=1 a
+	shift 3 2>/dev/null || die "usage: vpn-sync ports set <server> openvpn <port> [tcp|udp] | wireguard <port> [--no-firewall]"
+	for a in "$@"; do
+		case "$a" in
+			tcp|udp) proto="$a" ;;
+			--no-firewall) fw=0 ;;
+			*) die "unknown option: $a" ;;
+		esac
+	done
+	[[ "$vpn" == openvpn || "$vpn" == wireguard ]] || die "which VPN: openvpn or wireguard (IKEv2 always uses UDP 500 and 4500)"
+	[[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die "port must be 1-65535"
+	[ "$vpn" = wireguard ] && { [ -z "$proto" ] || [ "$proto" = udp ] || die "WireGuard only uses UDP"; proto=udp; }
+	load_server "$name"
+	connect "" >&2 || die "can't reach $name"
+	local t; for t in $S_TUNNELS; do
+		[ "$VIA_ADDR" = "$t" ] && die "$name is reachable only through its own VPN right now; changing a port would cut this connection"
+	done
+	local sudo; sudo=$(sudo_prefix)
+	remote "test -x /usr/local/sbin/vpn-set-port" </dev/null || die "$name's server tools can't change ports yet (run: vpn-sync server install $name)"
+	local snap old_proto old_port
+	snap=$(remote "${sudo}/usr/local/sbin/vpn-status" </dev/null) || die "$name: couldn't read its status"
+	old_proto="" old_port=""
+	read -r old_proto old_port < <(awk -F'\t' -v v="$vpn" '$1=="PORT" && $2==v {print $3, $4; exit}' <<< "$snap") || true
+	[ -n "$old_port" ] || die "$vpn isn't installed on $name"
+	[ -n "$proto" ] || proto="$old_proto"
+	if [ "$proto" = "$old_proto" ] && [ "$port" = "$old_port" ]; then info "$vpn on $name already uses $(echo "$proto" | tr a-z A-Z) $port"; return 0; fi
+	local P; P=$(echo "$proto" | tr a-z A-Z)
+
+	# 1. the Lightsail firewall: open the new port first (nothing changes on the server if this fails)
+	local use_fw=0 states rule opened=""
+	if [ $fw -eq 1 ] && [ -n "$S_REGION" ]; then
+		use_fw=1
+		states=$(fw_states) || die "couldn't read $name's Lightsail firewall; nothing changed (or use --no-firewall and open $P $port yourself)"
+		rule=$(fw_rule "$states" "$proto" "$port")
+		case "$rule" in
+			closed*) fw_change Open "${rule#closed }" || die "couldn't open $P $port in $name's Lightsail firewall; nothing changed"
+				opened="${rule#closed }"; info "  Lightsail firewall: opened $P $port" ;;
+			*) info "  Lightsail firewall: $P $port is already allowed" ;;
+		esac
+	elif [ -n "$S_REGION" ]; then
+		info "  Lightsail firewall left alone (--no-firewall): open $P $port on the instance's Networking tab"
+	else
+		info "  not a Lightsail server: allow $P $port in its provider's firewall"
+	fi
+
+	# 2. the server
+	local out rc=0
+	out=$(remote "${sudo}/usr/local/sbin/vpn-set-port $vpn $port $proto" </dev/null 2>&1) || rc=$?
+	printf '%s\n' "$out" | grep -vE '^(PORT_OLD|PORT_NEW|PROFILES)	' | sed 's/^/  server: /'
+	if [ $rc -ne 0 ]; then
+		[ -n "$opened" ] && fw_change Close "$opened" && info "  Lightsail firewall: closed $P $port again"
+		die "$vpn on $name wasn't changed"
+	fi
+
+	# 3. close the old port in the Lightsail firewall unless something else still uses it
+	if [ $use_fw -eq 1 ]; then
+		local OP; OP=$(echo "$old_proto" | tr a-z A-Z)
+		snap=$(remote "${sudo}/usr/local/sbin/vpn-status" </dev/null 2>/dev/null || true)
+		if awk -F'\t' -v p="$old_proto" -v n="$old_port" '$1=="PORT" && $3==p && $4==n {f=1} END {exit !f}' <<< "$snap"; then
+			info "  Lightsail firewall: $OP $old_port stays open (still in use)"
+		elif states=$(fw_states 2>/dev/null); then
+			rule=$(fw_rule "$states" "$old_proto" "$old_port")
+			case "$rule" in
+				exact*) if fw_change Close "${rule#exact }"; then info "  Lightsail firewall: closed $OP $old_port"
+					else info "  ! couldn't close $OP $old_port in the Lightsail firewall; close it on the instance's Networking tab"; fi ;;
+				covered) info "  Lightsail firewall: $OP $old_port is part of a wider rule; left as it is" ;;
+				*) ;;
+			esac
+		else
+			info "  ! couldn't reach Lightsail to close $OP $old_port (this Mac may have been using that VPN); close it on the instance's Networking tab"
+		fi
+	fi
+	echo "CHANGED=$vpn $proto $port"
+
+	# 4. the new profiles to the Desktop (and OpenVPN Connect)
+	info ""
+	"$0" "$name" || info "  ! couldn't sync $name's profiles; run: vpn-sync $name"
+	info ""
+	info "Devices on $vpn need their new profile (the port is in it): scan the new QR code or import the new file."
+}
+
+ports_cmd() { # ports_cmd [server...] | set SERVER VPN PORT [PROTO] | open SERVER
+	[ "${1:-}" = set ] && { shift; ports_set "$@"; return; }
+	if [ "${1:-}" = open ]; then
+		[ -n "${2:-}" ] || die "usage: vpn-sync ports open <server>"
+		load_server "$2"; [ -n "$S_REGION" ] || die "$2 isn't a Lightsail server"
+		connect "" >&2 || die "can't reach $2"
+		fw_open_all; return
+	fi
 	local list=() f s rc=0
 	for s in "$@"; do [[ "$s" =~ $SERVER_RE ]] || die "invalid server name: $s"; list+=("$s"); done
 	if [ ${#list[@]} -eq 0 ]; then

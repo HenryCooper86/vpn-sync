@@ -96,6 +96,7 @@ final class Model: ObservableObject {
     @Published var qrDevice: Device?
     @Published var showAddDevice = false
     @Published var showBatchAdd = false
+    @Published var portsTarget: PortsTarget?
     @Published var selecting = false
     @Published var selection: Set<String> = []
     @Published var confirmRemoval: [String]?
@@ -903,6 +904,7 @@ struct ContentView: View {
         .sheet(item: $m.qrDevice) { QRSheet(device: $0) }
         // on its own view: many .sheet modifiers on one view don't all present
         .background(Color.clear.sheet(item: $m.limitTarget) { LimitSheet(target: $0).environmentObject(m) })
+        .background(Color.clear.sheet(item: $m.portsTarget) { ChangePortsSheet(server: $0.server).environmentObject(m) })
         // demo mode only (VPNSYNC_HOME): switch tabs from outside, for screenshots without clicking
         .onReceive(DistributedNotificationCenter.default().publisher(for: Notification.Name("local.vpnsync.demo.tab"))) { n in
             guard ProcessInfo.processInfo.environment["VPNSYNC_HOME"] != nil, let t = n.object as? String else { return }

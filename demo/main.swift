@@ -87,6 +87,10 @@ case "aws":
     say("KEY=none")
 case "server":
     if server(after: 1) == "list" { for s in DemoData.servers { say("\(s.name)\t\(s.ip)") } }
+    if server(after: 1) == "probe", let s = server(after: 2).flatMap(DemoData.server) {
+        for l in ["SUDO=ok", "OS=Ubuntu 24.04 LTS", "PKG=apt", "OPENVPN=tcp 443", "WIREGUARD=udp 51820",
+                  "IPSEC=\(s.ipsec ? "ikev2" : "none")", "TOOLS=installed"] { say(l) }
+    }
 default:
     // a sync or check: report the server as up to date
     let names = args.filter { a in DemoData.server(a) != nil }

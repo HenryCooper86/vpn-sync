@@ -568,6 +568,11 @@ struct InstallPanel: View {
     @State private var dns = 3
     @State private var installIPsec = false
     @State private var client = "client"
+    // ports of VPNs that are already installed (from the probe); changed after setup if edited
+    @State private var curOVPNProto = "tcp"
+    @State private var curOVPNPort = ""
+    @State private var curWGPort = ""
+    @State private var portNotes: [String] = []
 
     private let dnsChoices = [(1, "System resolvers"), (2, "Google"), (3, "Cloudflare 1.1.1.1"), (4, "OpenDNS"),
                               (5, "Quad9"), (6, "Gcore"), (7, "AdGuard")]
@@ -579,12 +584,35 @@ struct InstallPanel: View {
     private var hasTools: Bool { probe["TOOLS"] == "installed" }
     private var willInstallVPN: Bool { (!hasOVPN && installOVPN) || (!hasWG && installWG) }
 
+    /// The installed VPNs' ports as the probe found them ("tcp 443").
+    private func probed(_ key: String) -> (proto: String, port: String)? {
+        guard let v = probe[key], v != "none" else { return nil }
+        let p = v.split(separator: " ").map(String.init)
+        return p.count == 2 ? (p[0].hasPrefix("tcp") ? "tcp" : "udp", p[1]) : nil
+    }
+    private var ovpnPortChanged: Bool {
+        guard let c = probed("OPENVPN") else { return false }
+        return c.port != curOVPNPort || c.proto != curOVPNProto
+    }
+    private var wgPortChanged: Bool { probed("WIREGUARD").map { $0.port != curWGPort } ?? false }
+    /// What OpenVPN and WireGuard will use after setup.
+    private var finalOVPN: (proto: String, port: String)? {
+        hasOVPN ? (curOVPNProto, curOVPNPort) : (installOVPN ? (ovpnProto, ovpnPort) : nil)
+    }
+    private var finalWG: String? { hasWG ? curWGPort : (installWG ? wgPort : nil) }
+
     private var problem: String? {
-        if !hasOVPN && installOVPN && !(Int(ovpnPort).map { (1...65535).contains($0) } ?? false) { return "OpenVPN port must be 1–65535." }
-        if !hasWG && installWG && !(Int(wgPort).map { (1...65535).contains($0) } ?? false) { return "WireGuard port must be 1–65535." }
-        if !hasOVPN && installOVPN && !hasWG && installWG && ovpnProto == "udp" && ovpnPort == wgPort {
+        func ok(_ s: String) -> Bool { Int(s).map { (1...65535).contains($0) } ?? false }
+        if let o = finalOVPN, !ok(o.port) { return "OpenVPN port must be 1–65535." }
+        if let w = finalWG, !ok(w) { return "WireGuard port must be 1–65535." }
+        if let o = finalOVPN, let w = finalWG, o.proto == "udp", o.port == w {
             return "OpenVPN (UDP) and WireGuard can't share a UDP port."
         }
+        if hasIPsec == true || willInstallIPsec {
+            if let w = finalWG, w == "500" || w == "4500" { return "UDP \(w) is IKEv2's; pick another WireGuard port." }
+            if let o = finalOVPN, o.proto == "udp", o.port == "500" || o.port == "4500" { return "UDP \(o.port) is IKEv2's; pick another OpenVPN port." }
+        }
+        if let o = finalOVPN, o.proto == "tcp", o.port == "22" { return "TCP 22 is SSH's port." }
         if willInstallVPN && nameProblem(client, existing: []) != nil { return "First device name: 1–15 letters, numbers, - or _." }
         if !hasOVPN && !hasWG && !installOVPN && !installWG { return "Choose at least one VPN to install." }
         return nil
@@ -604,8 +632,11 @@ struct InstallPanel: View {
                 OutputView(text: m.opLog, height: 260)
             case .finished:
                 Label("\(name) is ready.", lucide: "circle-check").foregroundStyle(.green).font(.headline)
-                Text("Its profiles were copied to your Desktop. Make sure the VPN ports are open in the server's firewall (\(portSummary)).")
+                Text(m.isLightsail(name)
+                     ? "Its profiles were copied to your Desktop. VPN Sync opened its ports in the Lightsail firewall where the key allows it (\(portSummary)); the output says if any need opening by hand."
+                     : "Its profiles were copied to your Desktop. Make sure the VPN ports are open in the server's firewall (\(portSummary)).")
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                ForEach(portNotes, id: \.self) { Label($0, lucide: "circle-check", size: 13).labelStyle(TightLabel()).font(.callout) }
                 OutputView(text: m.opLog, height: 160)
                 HStack { Spacer(); Button("Done") { m.selectServer(name); onDone() }.keyboardShortcut(.defaultAction).glassButton(prominent: true) }
             case .failed:
@@ -624,10 +655,8 @@ struct InstallPanel: View {
 
     private var portSummary: String {
         var parts: [String] = []
-        if let o = probe["OPENVPN"], o != "none" { parts.append(o.uppercased()) }
-        else if installOVPN { parts.append("\(ovpnProto.uppercased()) \(ovpnPort)") }
-        if let w = probe["WIREGUARD"], w != "none" { parts.append(w.uppercased()) }
-        else if installWG { parts.append("UDP \(wgPort)") }
+        if let o = finalOVPN { parts.append("\(o.proto.uppercased()) \(o.port)") }
+        if let w = finalWG { parts.append("UDP \(w)") }
         if hasIPsec == true || willInstallIPsec { parts.append("UDP 500 and 4500 for IKEv2") }
         return parts.joined(separator: ", ")
     }
@@ -636,8 +665,8 @@ struct InstallPanel: View {
         VStack(alignment: .leading, spacing: 10) {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
                 GridRow { Text("System").foregroundStyle(.secondary); Text(probe["OS"] ?? "unknown") }
-                GridRow { Text("OpenVPN").foregroundStyle(.secondary); Text(hasOVPN ? "installed (\(probe["OPENVPN"]!.uppercased())), will be kept" : "not installed") }
-                GridRow { Text("WireGuard").foregroundStyle(.secondary); Text(hasWG ? "installed (\(probe["WIREGUARD"]!.uppercased())), will be kept" : "not installed") }
+                GridRow { Text("OpenVPN").foregroundStyle(.secondary); Text(hasOVPN ? "installed (\(probe["OPENVPN"]!.uppercased())), devices kept" : "not installed") }
+                GridRow { Text("WireGuard").foregroundStyle(.secondary); Text(hasWG ? "installed (\(probe["WIREGUARD"]!.uppercased())), devices kept" : "not installed") }
                 GridRow {
                     Text("IPsec/IKEv2").foregroundStyle(.secondary)
                     Text(hasIPsec == true ? "installed (\(probe["IPSEC"]!.replacingOccurrences(of: "ikev2", with: "IKEv2, Libreswan"))), will be kept" : "not installed")
@@ -647,6 +676,34 @@ struct InstallPanel: View {
             .font(.callout)
             if probe["PKG"] == "unsupported" {
                 Text("This system isn't supported (needs apt or dnf).").foregroundStyle(.red)
+            }
+            if hasOVPN || hasWG {
+                VStack(alignment: .leading, spacing: 8) {
+                    if hasOVPN {
+                        HStack {
+                            Text("OpenVPN port").frame(width: 170, alignment: .leading)
+                            Picker("", selection: $curOVPNProto) { Text("TCP").tag("tcp"); Text("UDP").tag("udp") }
+                                .pickerStyle(.segmented).frame(width: 110).labelsHidden()
+                            Text("port").foregroundStyle(.secondary)
+                            TextField("443", text: $curOVPNPort).textFieldStyle(.roundedBorder).frame(width: 70)
+                        }
+                    }
+                    if hasWG {
+                        HStack {
+                            Text("WireGuard port").frame(width: 170, alignment: .leading)
+                            Text("UDP").foregroundStyle(.secondary).frame(width: 110)
+                            Text("port").foregroundStyle(.secondary)
+                            TextField("443", text: $curWGPort).textFieldStyle(.roundedBorder).frame(width: 70)
+                        }
+                    }
+                    Text(ovpnPortChanged || wgPortChanged
+                         ? "After setup, VPN Sync moves the VPN to the new port and updates every profile\(m.isLightsail(name) ? " and the Lightsail firewall" : ""). Devices on it need their new profile."
+                         : "Installed VPNs keep their port. Change it here to move them; every profile is updated.")
+                        .font(.caption).foregroundStyle(ovpnPortChanged || wgPortChanged ? .orange : .secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(14)
+                .glassPanel(18)
             }
             if !hasOVPN || !hasWG {
                 VStack(alignment: .leading, spacing: 0) {
@@ -676,13 +733,16 @@ struct InstallPanel: View {
                             Text("First device name").frame(width: 170, alignment: .leading)
                             TextField("client", text: $client).textFieldStyle(.roundedBorder).frame(width: 140)
                         }
-                        Text("TCP 443 looks like normal HTTPS traffic and gets through most networks; WireGuard on UDP 443 is faster. Open the same ports in the server's firewall (Lightsail: instance → Networking → Add rule).")
+                        Text("TCP 443 looks like normal HTTPS traffic and gets through most networks; WireGuard on UDP 443 is faster. " + (m.isLightsail(name)
+                             ? "VPN Sync opens the ports in the Lightsail firewall (the key needs the port permissions; Settings → Lightsail)."
+                             : "Open the same ports in the server's firewall."))
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     .padding(14)
                 }
                 .glassPanel(18)
-            } else {
+            }
+            if hasOVPN && hasWG {
                 Text(hasTools ? "Everything is installed. Running setup again updates the server tools and keeps all VPN settings and devices."
                               : "Both VPNs are installed. Setup adds the server tools and keeps all VPN settings and devices.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -700,7 +760,7 @@ struct InstallPanel: View {
             HStack {
                 Spacer()
                 Button("Cancel") { onDone() }.keyboardShortcut(.cancelAction)
-                Button(willInstallVPN || willInstallIPsec ? "Install" : (hasTools ? "Update Tools" : "Set Up")) { Task { await install() } }
+                Button(willInstallVPN || willInstallIPsec ? "Install" : (ovpnPortChanged || wgPortChanged) ? "Set Up and Move" : (hasTools ? "Update Tools" : "Set Up")) { Task { await install() } }
                     .keyboardShortcut(.defaultAction).glassButton(prominent: true)
                     .disabled(problem != nil || probe["PKG"] == "unsupported")
             }
@@ -716,8 +776,8 @@ struct InstallPanel: View {
                                           : "Couldn't reach \(name): \(lastLines(out, 2))"
             phase = .failed; return
         }
-        if let o = probe["OPENVPN"], o != "none" { installOVPN = false }
-        if let w = probe["WIREGUARD"], w != "none" { installWG = false }
+        if let o = probed("OPENVPN") { installOVPN = false; curOVPNProto = o.proto; curOVPNPort = o.port }
+        if let w = probed("WIREGUARD") { installWG = false; curWGPort = w.port }
         phase = .ready
     }
 
@@ -733,6 +793,26 @@ struct InstallPanel: View {
         if willInstallIPsec { args.append("--ipsec") }
         let (code, out) = await m.cli(args, label: "Setting up \(name)…")
         if code == 0 && out.contains("install finished") {
+            // then move installed VPNs whose port was changed here
+            var log = m.opLog
+            portNotes = []
+            var steps: [[String]] = []
+            if ovpnPortChanged { steps.append(["ports", "set", name, "openvpn", curOVPNPort, curOVPNProto]) }
+            if wgPortChanged { steps.append(["ports", "set", name, "wireguard", curWGPort]) }
+            for a in steps {
+                let (c, o) = await m.cli(a, label: "Changing \(a[3] == "openvpn" ? "OpenVPN" : "WireGuard")'s port on \(name)…")
+                log += o
+                if c != 0 {
+                    m.opLog = log
+                    error = "Setup finished, but the port wasn't changed: " + lastLines(o, 1).replacingOccurrences(of: "vpn-sync: ", with: "")
+                    phase = .failed
+                    return
+                }
+                if let ch = parseKV(o)["CHANGED"]?.split(separator: " "), ch.count == 3 {
+                    portNotes.append("\(ch[0] == "openvpn" ? "OpenVPN" : "WireGuard") now uses \(ch[1].uppercased()) \(ch[2]).")
+                }
+            }
+            m.opLog = log
             phase = .finished
             if m.server == name { m.reload() }
         } else {

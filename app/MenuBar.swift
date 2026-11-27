@@ -413,6 +413,8 @@ func openSheetPreviewIfRequested(_ m: Model) {
         case "add": m.showAddDevice = true
         case "batch": m.showBatchAdd = true
         case "qr": m.qrDevice = m.devices.first { $0.qr != nil }
+        case "ports": m.portsTarget = PortsTarget(server: m.server)
+        case "install": m.installServer = m.server
         case "limit":
             if let d = ProcessInfo.processInfo.environment["VPNSYNC_PREVIEW_DEVICE"] ?? m.devices.first?.name {
                 m.limitTarget = LimitTarget(server: m.server, device: d)

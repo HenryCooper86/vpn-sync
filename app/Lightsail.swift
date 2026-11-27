@@ -1,5 +1,6 @@
 // Stopping and starting Lightsail servers (vpn-sync aws state | stop | start). Needs a key that
-// may call lightsail:StopInstance and lightsail:StartInstance (Settings → Lightsail). A server
+// may call lightsail:StopInstance and lightsail:StartInstance (Settings → Lightsail; Change Ports
+// also needs GetInstancePortStates, OpenInstancePublicPorts and CloseInstancePublicPorts). A server
 // without a static IP comes back with a new address: VPN Sync looks it up and resyncs.
 import SwiftUI
 

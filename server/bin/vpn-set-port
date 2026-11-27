@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# vpn-set-port — move OpenVPN or WireGuard to another port.
+# Usage: vpn-set-port openvpn <port> [tcp|udp]     (protocol left out: keeps the current one)
+#        vpn-set-port wireguard <port>              (always UDP)
+#
+# Changes the port everywhere it's set: the VPN's own config, the firewall rule Nyr's installer
+# made (openvpn-iptables / wg-iptables service, or firewalld), the template new clients are made
+# from, and every client profile. Then restarts the VPN and checks it listens on the new port;
+# if it doesn't, every file is put back and the VPN restarted on the old port.
+# Connected devices drop and can't reconnect until they get their new profile.
+#
+# Output (tab separated) besides readable lines:
+#   PORT_OLD <vpn> <tcp|udp> <port>
+#   PORT_NEW <vpn> <tcp|udp> <port>
+#   PROFILES <n>                      client profiles rewritten
+# Backups: /root/vpn-sync-backups/port-<vpn>-<time>/
+# Testing: VPNSYNC_DRYRUN=<folder> rewrites only copies in that folder (server.conf,
+# client-common.txt, ovpn/, wg0.conf, wg/, systemd/) and restarts nothing. Every path is taken from
+# the folder, never from /etc/vpn-sync.conf, so a test can't touch the real files.
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "${VPN_SYNC_LIB:-/usr/local/lib/vpn-sync}/common.sh"
+require_root
+
+die() { echo "vpn-set-port: $*" >&2; exit 1; }
+DRY=0
+if [[ -n "${VPNSYNC_DRYRUN:-}" ]]; then
+	t="$VPNSYNC_DRYRUN"
+	[[ "$t" == /tmp/* && -d "$t" && -f "$t/server.conf" && -f "$t/wg0.conf" ]] || die "VPNSYNC_DRYRUN must be a test folder in /tmp with server.conf and wg0.conf"
+	DRY=1 OVPN_SERVER_CONF="$t/server.conf" OVPN_TEMPLATE="$t/client-common.txt" OVPN_DIR="$t/ovpn"
+	WG_CONF="$t/wg0.conf" WG_DIR="$t/wg" BACKUP_DIR="$t/backups" SYSTEMD_DIR="$t/systemd"
+fi
+sysd() { if [[ $DRY == 1 ]]; then echo "(dry run) systemctl $*"; else systemctl "$@"; fi; }
+vpn="${1:-}" port="${2:-}" proto="${3:-}"
+[[ "$vpn" == openvpn || "$vpn" == wireguard ]] || die "usage: vpn-set-port openvpn <port> [tcp|udp] | wireguard <port>"
+[[ "$port" =~ ^[0-9]{1,5}$ ]] && (( port >= 1 && port <= 65535 )) || die "port must be 1-65535"
+
+# ---- what it is now
+if [[ $vpn == openvpn ]]; then
+	have_openvpn || [[ -f "$OVPN_SERVER_CONF" ]] || die "OpenVPN isn't installed"
+	old_port=$(awk '$1=="port"{print $2; exit}' "$OVPN_SERVER_CONF"); old_port=${old_port:-1194}
+	old_proto=$(awk '$1=="proto"{print $2; exit}' "$OVPN_SERVER_CONF")
+	case "$old_proto" in tcp*) old_proto=tcp ;; *) old_proto=udp ;; esac
+	[[ -n "$proto" ]] || proto=$old_proto
+	[[ "$proto" == tcp || "$proto" == udp ]] || die "protocol must be tcp or udp"
+	unit=openvpn-server@server.service fw_unit=openvpn-iptables.service
+else
+	[[ -f "$WG_CONF" ]] || die "WireGuard isn't installed"
+	[[ -z "$proto" || "$proto" == udp ]] || die "WireGuard only uses UDP"
+	proto=udp old_proto=udp
+	old_port=$(awk -F'=' '/^[[:space:]]*ListenPort/{gsub(/[[:space:]]/,"",$2); print $2; exit}' "$WG_CONF")
+	[[ -n "$old_port" ]] || die "no ListenPort in $WG_CONF"
+	unit=wg-quick@wg0.service fw_unit=wg-iptables.service
+fi
+printf 'PORT_OLD\t%s\t%s\t%s\n' "$vpn" "$old_proto" "$old_port"
+if [[ "$port" == "$old_port" && "$proto" == "$old_proto" ]]; then
+	echo "$vpn already uses ${proto^^} $port"
+	printf 'PORT_NEW\t%s\t%s\t%s\nPROFILES\t0\n' "$vpn" "$proto" "$port"
+	exit 0
+fi
+
+# ---- is the new port free?
+reserved() { # other services' ports on this server
+	[[ $1 == udp ]] && have_ikev2 && [[ $2 == 500 || $2 == 4500 ]] && return 0
+	[[ $1 == tcp ]] && sshd -T 2>/dev/null | awk -v p="$2" '$1=="port" && $2==p {f=1} END {exit !f}' && return 0
+	return 1
+}
+reserved "$proto" "$port" && die "${proto^^} $port is used by $( [[ $proto == udp ]] && echo IKEv2 || echo SSH )"
+if [[ $vpn == openvpn && $proto == udp && -f "$WG_CONF" ]] \
+	&& [[ "$(awk -F'=' '/^[[:space:]]*ListenPort/{gsub(/[[:space:]]/,"",$2); print $2; exit}' "$WG_CONF")" == "$port" ]]; then
+	die "UDP $port is used by WireGuard"
+fi
+if [[ $vpn == wireguard && -f "$OVPN_SERVER_CONF" ]] \
+	&& [[ "$(awk '$1=="port"{print $2; exit}' "$OVPN_SERVER_CONF")" == "$port" ]] \
+	&& awk '$1=="proto" && $2 ~ /^udp/ {f=1} END {exit !f}' "$OVPN_SERVER_CONF"; then
+	die "UDP $port is used by OpenVPN"
+fi
+# anything else listening there (the VPN itself, when only the protocol changes, doesn't count)
+if [[ $proto == tcp ]]; then flag=-Hltnp; else flag=-Hlunp; fi
+users=$(ss $flag "sport = :$port" 2>/dev/null | grep -oE '\("[^"]+"' | tr -d '("' | sort -u | grep -vxE 'openvpn' || true)
+[[ $vpn == wireguard && -z "$users" ]] && ss -Hlun "sport = :$port" 2>/dev/null | grep -q . && [[ "$port" != "$old_port" ]] \
+	&& users="another program"
+[[ -z "$users" ]] || die "${proto^^} $port is already in use ($(printf '%s\n' "$users" | paste -sd, - | sed 's/,/, /g'))"
+
+# ---- back up everything that changes
+ensure_backup_dir
+bk=$(mktemp -d "$BACKUP_DIR/port-$vpn-$(date +%Y%m%d-%H%M%S)-XXXX")
+chmod 700 "$bk"
+files=()
+if [[ $vpn == openvpn ]]; then
+	files+=("$OVPN_SERVER_CONF")
+	[[ -f "$OVPN_TEMPLATE" ]] && files+=("$OVPN_TEMPLATE")
+	while IFS= read -r f; do files+=("$f"); done < <(ovpn_profiles)
+else
+	files+=("$WG_CONF")
+	while IFS= read -r f; do files+=("$f"); done < <(wg_profiles)
+fi
+unit_file="${SYSTEMD_DIR:-/etc/systemd/system}/$fw_unit"
+[[ -f "$unit_file" ]] && files+=("$unit_file")
+for f in "${files[@]}"; do
+	mkdir -p "$bk$(dirname "$f")"; cp -p "$f" "$bk$f"
+done
+echo "backed up ${#files[@]} files to $bk"
+
+firewalld=0
+[[ $DRY == 0 ]] && systemctl is-active --quiet firewalld 2>/dev/null && firewalld=1
+
+restore() {
+	echo "putting the old port back" >&2
+	[[ -f "$unit_file" ]] && sysd stop "$fw_unit" >/dev/null 2>&1 || true
+	for f in "${files[@]}"; do cp -p "$bk$f" "$f"; done
+	if [[ $firewalld == 1 ]]; then
+		firewall-cmd -q --remove-port="$port/$proto" 2>/dev/null || true
+		firewall-cmd -q --permanent --remove-port="$port/$proto" 2>/dev/null || true
+	fi
+	sysd daemon-reload
+	[[ -f "$unit_file" ]] && sysd start "$fw_unit" || true
+	sysd restart "$unit" || true
+	[[ -x /usr/local/sbin/vpn-usage ]] && /usr/local/sbin/vpn-usage collect >/dev/null 2>&1 || true
+}
+
+# ---- change it
+# the firewall unit's ExecStop removes the rules it added, so stop it while it still has the old port
+[[ -f "$unit_file" ]] && sysd stop "$fw_unit" 2>/dev/null || true
+n=0
+if [[ $vpn == openvpn ]]; then
+	sed -i -E "s/^port [0-9]+/port $port/; s/^proto (tcp|udp)([0-9]?)/proto $proto\2/" "$OVPN_SERVER_CONF"
+	grep -qE '^port ' "$OVPN_SERVER_CONF" || sed -i "1i port $port" "$OVPN_SERVER_CONF"
+	# explicit-exit-notify only works over UDP: OpenVPN won't start over TCP with it
+	if [[ $proto == tcp ]]; then sed -i '/^explicit-exit-notify/d' "$OVPN_SERVER_CONF"
+	elif ! grep -q '^explicit-exit-notify' "$OVPN_SERVER_CONF"; then echo "explicit-exit-notify" >> "$OVPN_SERVER_CONF"; fi
+	for f in "$OVPN_TEMPLATE" $(ovpn_profiles); do
+		[[ -f "$f" ]] || continue
+		sed -i -E "s/^remote ([^ ]+) [0-9]+(.*)$/remote \1 $port\2/; s/^proto (tcp|udp)([0-9]?)(-client)?$/proto $proto\2\3/" "$f"
+		[[ "$f" == "$OVPN_TEMPLATE" ]] || n=$((n + 1))
+	done
+else
+	sed -i -E "s/^([[:space:]]*ListenPort[[:space:]]*=[[:space:]]*)[0-9]+/\1$port/" "$WG_CONF"
+	while IFS= read -r f; do
+		sed -i -E "s/^(Endpoint[[:space:]]*=[[:space:]]*.*):[0-9]+[[:space:]]*$/\1:$port/" "$f"
+		n=$((n + 1))
+	done < <(wg_profiles)
+fi
+if [[ -f "$unit_file" ]]; then
+	sed -i -E "s/-p $old_proto --dport $old_port( |$)/-p $proto --dport $port\1/g" "$unit_file"
+fi
+if [[ $firewalld == 1 ]]; then
+	firewall-cmd -q --add-port="$port/$proto" && firewall-cmd -q --permanent --add-port="$port/$proto" || true
+fi
+# SELinux (RHEL family): OpenVPN may only bind to its labelled ports
+if [[ $DRY == 0 && $vpn == openvpn ]] && command -v semanage >/dev/null && sestatus 2>/dev/null | grep -q 'enforcing'; then
+	semanage port -a -t openvpn_port_t -p "$proto" "$port" 2>/dev/null || true
+fi
+sysd daemon-reload
+[[ -f "$unit_file" ]] && { sysd start "$fw_unit" || { restore; die "the firewall rules didn't load; nothing changed"; }; }
+sysd restart "$unit" || { restore; die "$vpn didn't start on ${proto^^} $port; it's back on ${old_proto^^} $old_port"; }
+
+# ---- is it listening?
+ok=0
+[[ $DRY == 1 ]] && ok=1
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+	if [[ $proto == tcp ]]; then ss -Hltn "sport = :$port" | grep -q . && ok=1
+	else ss -Hlun "sport = :$port" | grep -q . && ok=1; fi
+	[[ $ok == 1 ]] && break
+	sleep 1
+done
+[[ $ok == 1 ]] || { restore; die "$vpn isn't listening on ${proto^^} $port; it's back on ${old_proto^^} $old_port"; }
+
+if [[ $firewalld == 1 && "$port/$proto" != "$old_port/$old_proto" ]]; then
+	firewall-cmd -q --remove-port="$old_port/$old_proto" 2>/dev/null || true
+	firewall-cmd -q --permanent --remove-port="$old_port/$old_proto" 2>/dev/null || true
+fi
+# the firewall unit inserted its FORWARD rules on top: put the pause chain first again
+[[ $DRY == 1 ]] || { [[ -x /usr/local/sbin/vpn-usage ]] && /usr/local/sbin/vpn-usage collect >/dev/null 2>&1; } || true
+
+[[ $DRY == 1 ]] || logger -t vpn-sync "$vpn moved from ${old_proto^^} $old_port to ${proto^^} $port ($n profiles rewritten; backup $bk)"
+echo "$vpn now listens on ${proto^^} $port (was ${old_proto^^} $old_port); rewrote $n client profile(s)"
+printf 'PORT_NEW\t%s\t%s\t%s\nPROFILES\t%s\n' "$vpn" "$proto" "$port" "$n"

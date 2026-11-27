@@ -32,7 +32,7 @@ It can also set up a fresh server for you.
 |---|---|
 | **Every server in one place** | Switch between servers, or see all of them at once in the menu bar. Servers behind a firewall are reached through another server over a private network. |
 | **Live view** | Who's connected right now, on which VPN, from which country and port, since when and how fast, with a log of connects and disconnects and a notification for each. |
-| **Ports** | The ports each server listens on (OpenVPN, WireGuard, IKEv2, SSH), the ones its firewall must allow, and the address and port each connected device comes from. |
+| **Ports** | The ports each server listens on (OpenVPN, WireGuard, IKEv2, SSH) and the address and port each connected device comes from. Move OpenVPN or WireGuard to another port: the server, its firewall rule, every profile and, on Lightsail, the cloud firewall are changed together. |
 | **Traffic** | Speed over time, data per device and per protocol, the server's traffic per day for a month. |
 | **Usage limits** | A daily or monthly limit per device that alerts you at 80% and 100%, or also pauses it. Pause or resume any device's internet by hand; it stays connected and nothing is revoked. |
 | **Devices and profiles** | Add, batch add, remove and batch remove devices on every VPN at once. WireGuard QR codes for phones and TVs, IKEv2 profiles that install natively on iPhone, Mac, Android and Windows. |
@@ -99,8 +99,9 @@ Mac installs the tools; nothing to do on the server yourself.
    **Trust and Add**.
 2. **Set Up**: VPN Sync shows what's installed. Keep it, or pick OpenVPN (TCP/UDP, port),
    WireGuard (port), DNS and the first device, and tick **Also install IPsec/IKEv2** if you want
-   it. Open the same ports in your provider's firewall (Lightsail: instance → Networking); IKEv2
-   needs UDP 500 and 4500.
+   it. On Lightsail, VPN Sync opens the ports in its firewall (with a Lightsail key); elsewhere open
+   them in your provider's firewall. IKEv2 needs UDP 500 and 4500. Ports of VPNs that are already
+   installed can be changed here too, or later with **Ports → Change Ports…**.
 3. **Add Device** (or **Batch Add…**). Profiles land in `~/Desktop/<server>-<ip>/`; scan the
    WireGuard QR code, import the `.ovpn`, or install the IKEv2 `.mobileconfig`.
 4. **iPhone**: on the Mac, **Settings → iPhone → Export for iPhone…** writes an encrypted file and
@@ -108,8 +109,9 @@ Mac installs the tools; nothing to do on the server yourself.
 
 Settings (the gear, or ⌘,) also has notifications, usage-limit alerts and the warning level,
 the appearance, and a Lightsail key: with it VPN Sync finds a server's new IP after a stop and
-start, and **Power → Stop Server / Start Server** work (the policy it shows allows only reading,
-stopping and starting instances). To use them on the iPhone, tick **Include the Lightsail key**
+start, **Power → Stop Server / Start Server** work, and installing or changing ports opens them in
+the Lightsail firewall (the policy it shows allows only reading, stopping and starting instances
+and opening or closing their ports). To use them on the iPhone, tick **Include the Lightsail key**
 when exporting.
 
 ## Command line
@@ -122,6 +124,9 @@ vpn-sync --remove a,b <server>             revoke/remove devices
 vpn-sync status <server>                   who is connected now
 vpn-sync watch <server> [--interval N]     stream connection snapshots
 vpn-sync ports [server...]                 ports each server listens on; each connected device's port
+vpn-sync ports set <server> openvpn <port> [tcp|udp] | wireguard <port>
+                                           move a VPN to another port (profiles, firewalls) and sync
+vpn-sync ports open <server>               allow every VPN port in the Lightsail firewall
 vpn-sync usage [server...]                 data per device today and this month, limit, % used
 vpn-sync limits [server...]                only devices with a limit or a pause
 vpn-sync limit <server> <device> --daily 2GB --monthly 50GB --action alert|pause

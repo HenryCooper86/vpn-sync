@@ -8,7 +8,9 @@ let lightsailPolicy = """
   "Version": "2012-10-17",
   "Statement": [
     { "Effect": "Allow",
-      "Action": ["lightsail:GetInstance", "lightsail:StopInstance", "lightsail:StartInstance"],
+      "Action": ["lightsail:GetInstance", "lightsail:StopInstance", "lightsail:StartInstance",
+                 "lightsail:GetInstancePortStates", "lightsail:OpenInstancePublicPorts",
+                 "lightsail:CloseInstancePublicPorts"],
       "Resource": "*" }
   ]
 }

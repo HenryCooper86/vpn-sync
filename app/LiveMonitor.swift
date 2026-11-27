@@ -967,6 +967,8 @@ struct PortsMenu: View {
             }
             if !m.ports.isEmpty {
                 Divider()
+                Button("Change Ports…") { m.portsTarget = PortsTarget(server: m.server) }
+                    .disabled(!m.ports.contains { $0.vpn == "openvpn" || $0.vpn == "wireguard" })
                 Button("Copy Ports") {
                     let text = ["openvpn", "wireguard", "ipsec", "ssh"].compactMap { v in m.ports.text(v).map { "\(portLabel(v)): \($0)" } }
                     NSPasteboard.general.clearContents()
