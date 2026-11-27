@@ -120,6 +120,10 @@ final class Model: ObservableObject {
     @Published var limitAlerts = UserDefaults.standard.object(forKey: "limitAlerts") as? Bool ?? true {
         didSet { UserDefaults.standard.set(limitAlerts, forKey: "limitAlerts"); if limitAlerts { Notifier.shared.requestPermission() } }
     }
+    /// Show paused and near-limit devices next to the count in the menu bar.
+    @Published var menuBarLimits = UserDefaults.standard.object(forKey: "menuBarLimits") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(menuBarLimits, forKey: "menuBarLimits") }
+    }
     /// Early warning at this percentage of a limit; 0 turns it off. Read elsewhere as usageWarnAt.
     @Published var warnAt = usageWarnAt {
         didSet { UserDefaults.standard.set(warnAt, forKey: "usageWarnAt") }

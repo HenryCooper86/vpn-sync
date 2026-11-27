@@ -41,11 +41,13 @@ A macOS app and command-line tool for running your own OpenVPN + WireGuard serve
   and paused devices. The menu bar panel and the Traffic tab list limited and paused devices
   with the same actions; the Traffic tab also shows every device's data this month.
   **Settings → Limits** turns limit notifications on or off (separately from connect
-  banners), sets the warning level (50–90% or off), and lists every limit and pause on
+  banners) and the menu bar mark, sets the warning level (50–90% or off), and lists every
+  limit and pause on
   every server, with **Add a Limit** for each. The Activity tab logs
   limit events (80% used, limit reached, paused, resumed, limit set or removed) alongside
   connects and disconnects while VPN Sync is running.
-- **Menu bar:** a shield with the number of devices online across all servers; click it to
+- **Menu bar:** a shield with the number of devices online across all servers (plus a pause
+  mark with the number of paused devices, or a gauge when one nears its limit); click it to
   see who is connected where, or rename (pencil) or remove (trash) a server. Closing the
   window keeps VPN Sync running there (quit from
   the menu bar panel or with ⌘Q).

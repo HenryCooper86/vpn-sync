@@ -112,6 +112,9 @@ struct LimitsSettings: View {
                 Toggle("Usage-limit notifications", isOn: $m.limitAlerts)
                 Text("A banner when a device reaches the warning level or its limit, on any server. Separate from the connect and disconnect banners in General.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Toggle("Show in the menu bar", isOn: $m.menuBarLimits)
+                Text("Next to the device count: a pause mark with how many devices are paused, or a gauge when one is at the warning level.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Picker("Warn at", selection: $m.warnAt) {
                     Text("Off").tag(0)
                     ForEach([50, 70, 80, 90], id: \.self) { Text("\($0)%").tag($0) }

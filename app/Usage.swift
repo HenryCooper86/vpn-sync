@@ -155,6 +155,34 @@ extension Model {
     func deviceUsage(_ name: String) -> DeviceUsage? { usage?.usage[name] }
     func usageLimit(_ name: String) -> UsageLimit? { usage?.limits[name] }
     func pauseInfo(_ name: String) -> PauseInfo? { usage?.paused[name] }
+    /// Every server's devices that are paused, and those at or over the warning level (not paused).
+    var limitAttention: (paused: Int, near: Int) {
+        var p = 0, n = 0
+        for s in servers {
+            guard let u = usageByServer[s] else { continue }
+            p += u.paused.count
+            n += u.limits.filter { name, l in
+                u.paused[name] == nil && (l.tightest(u.usage[name] ?? DeviceUsage())?.fraction ?? 0) >= (usageWarnFraction ?? .infinity)
+            }.count
+        }
+        return (p, n)
+    }
+    /// "1 paused, 2 at 80% or more", or nil when nothing needs attention.
+    var limitAttentionText: String? {
+        let a = limitAttention
+        let parts = [a.paused == 0 ? nil : "\(a.paused) paused",
+                     a.near == 0 ? nil : "\(a.near) at \(warnAt)% or more"].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
+    }
+
+    /// Menu bar panel opened with Live off: fetch reports older than 5 minutes.
+    func refreshStaleUsage() async {
+        guard !monitoring else { return }
+        for s in servers where (usageByServer[s]?.time).map({ Date().timeIntervalSince($0) > 300 }) ?? true {
+            await refreshUsage(s)
+        }
+    }
+
     /// The selected server's limit events, newest first.
     var limitEvents: [UsageEvent] { usageEvents[server] ?? [] }
     /// Connects, disconnects and limit events on the selected server.

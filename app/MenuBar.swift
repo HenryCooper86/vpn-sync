@@ -1,4 +1,5 @@
-// Menu bar item: a shield with the number of devices online across all servers, and a
+// Menu bar item: a shield with the number of devices online across all servers (plus a pause
+// mark with the number of paused devices, or a gauge when a device nears its limit), and a
 // panel listing who is connected on each server.
 import SwiftUI
 import AppKit
@@ -7,13 +8,55 @@ struct MenuBarLabel: View {
     @ObservedObject var m: Model
     var body: some View {
         let n = m.onlineEverywhere
-        HStack(spacing: 3) {
-            Lucide.image(icon, size: 16)
-            if m.monitoring { Text("\(n)").monospacedDigit() }
+        let a = m.limitAttention
+        let showMark = m.menuBarLimits && (a.paused > 0 || a.near > 0)
+        let help = "VPN Sync: \(n) device\(n == 1 ? "" : "s") online" + (m.limitAttentionText.map { ", \($0)" } ?? "")
+        Group {
+            if showMark {
+                // The menu bar shows only one image and one text of a label, so with the limit
+                // mark the whole label is drawn as one template image.
+                Image(nsImage: markedImage(n, a))
+                    .accessibilityLabel(help)
+            } else {
+                HStack(spacing: 3) {
+                    Lucide.image(icon, size: 16)
+                    if m.monitoring { Text("\(n)").monospacedDigit() }
+                }
+            }
         }
-        .help("VPN Sync: \(n) device\(n == 1 ? "" : "s") online")
-        .onAppear { debugNote("menubar label appeared icon=\(icon) count=\(n)") }
+        .help(help)
+        .onAppear { debugNote("menubar label appeared icon=\(icon) count=\(n) paused=\(a.paused) near=\(a.near)") }
         .onChange(of: n) { debugNote("menubar count=\(n) icon=\(icon)") }
+        .onChange(of: a.paused) { debugNote("menubar paused=\(a.paused) near=\(a.near)") }
+        .onChange(of: a.near) { debugNote("menubar paused=\(a.paused) near=\(a.near)") }
+    }
+
+    /// Shield, count, then a pause mark with the number of paused devices (or a gauge when a
+    /// device is at the warning level), as one template image the menu bar tints itself.
+    private func markedImage(_ n: Int, _ a: (paused: Int, near: Int)) -> NSImage {
+        let content = HStack(spacing: 3) {
+            Lucide.image(icon, size: 16)
+            if m.monitoring { Text("\(n)") }
+            if a.paused > 0 {
+                Lucide.image("pause", size: 12).padding(.leading, m.monitoring ? 4 : 0)
+                Text("\(a.paused)")
+            } else {
+                Lucide.image("gauge", size: 14).padding(.leading, m.monitoring ? 4 : 0)
+            }
+        }
+        .font(.system(size: 13, weight: .medium)).monospacedDigit()
+        .foregroundStyle(.black)
+        .frame(height: 18)
+        let r = ImageRenderer(content: content)
+        r.scale = NSScreen.main?.backingScaleFactor ?? 2
+        let img = r.nsImage ?? Lucide.nsImage(icon, size: 16) ?? NSImage()
+        img.isTemplate = true
+        if let dir = ProcessInfo.processInfo.environment["VPNSYNC_DEBUG_DIR"],
+           let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: dir + "/menubar.png"))   // test hook
+        }
+        return img
     }
 
     /// Test hook (VPNSYNC_DEBUG_DIR): records what the menu bar item shows.
@@ -82,6 +125,7 @@ struct MenuBarPanel: View {
         }
         .padding(16)
         .frame(width: 410)
+        .task { await m.refreshStaleUsage() }
     }
 
     private var header: some View {
@@ -91,6 +135,13 @@ struct MenuBarPanel: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("VPN Sync").font(.system(size: 18, weight: .bold, design: .rounded))
                 Text(summary).font(.system(.callout, design: .rounded)).foregroundStyle(.secondary)
+                if let a = m.limitAttentionText {
+                    Label(a, lucide: m.limitAttention.paused > 0 ? "pause" : "gauge", size: 11)
+                        .labelStyle(TightLabel())
+                        .font(.system(.caption, design: .rounded).weight(.medium))
+                        .foregroundStyle(.orange)
+                        .help("Usage limits on all servers; each server's card lists them")
+                }
             }
             Spacer()
             LiveToggle().environmentObject(m)
