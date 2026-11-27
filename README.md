@@ -100,7 +100,9 @@ vpn-sync status <server>                   who is connected now
 vpn-sync watch <server> [--interval N]     stream connection snapshots
 vpn-sync service <server> <openvpn|wireguard|all> <start|stop|restart|status>
 vpn-sync reboot <server>
-vpn-sync usage <server>                    data used per device today and this month
+vpn-sync usage [server...]                 data per device today and this month, limit, % used
+vpn-sync limits [server...]                only devices with a limit or a pause
+vpn-sync limit <server> <device>           one device's limit and usage
 vpn-sync limit <server> <device> --daily 2GB --monthly 50GB --action alert|pause
 vpn-sync limit <server> <device> --clear
 vpn-sync pause | resume <server> <device>  block or unblock a device's traffic

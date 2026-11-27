@@ -19,8 +19,14 @@
 #   vpn-sync reboot <server>              reboot the whole server
 #
 # Data usage and limits (counted on the server every minute; sizes like 500MB, 5GB, 1.5TB):
-#   vpn-sync usage <server> [--raw]       today's and this month's usage per device, limits, pauses
+#   vpn-sync usage [server...]            today's and this month's usage per device, its limit,
+#                                         how much of it is used, and pauses (all servers if none
+#                                         given); paused devices first, then closest to a limit
+#   vpn-sync usage <server> --raw         the server's report as is (USAGEAT/USAGE/LIMIT/PAUSED)
+#   vpn-sync limits [server...]           only devices with a limit or a pause
+#   vpn-sync limit <server> <device>      show one device's limit and usage
 #   vpn-sync limit <server> <device> [--daily SIZE] [--monthly SIZE] [--action alert|pause]
+#                                         set or change it (options left out keep their value)
 #   vpn-sync limit <server> <device> --clear
 #   vpn-sync pause <server> <device>      block its traffic (it stays connected; nothing is revoked)
 #   vpn-sync resume <server> <device>     unblock it (a limit pause stays lifted until the period ends)
@@ -658,60 +664,119 @@ service_cmd() { # service_cmd SERVER VPN ACTION | reboot SERVER
 }
 
 SIZE_RE='^[0-9]+(\.[0-9]+)?[KMGTkmgt]?([iI]?[bB])?$'
-usage_cmd() { # usage_cmd usage|limit|pause|resume SERVER [DEVICE] [options]
-	local cmd="$1" name="${2:-}" dev="${3:-}" raw=0
-	[ -n "$name" ] || die "usage: vpn-sync $cmd <server>$([ "$cmd" = usage ] || echo ' <device>')"
-	local args=""
-	if [ "$cmd" = usage ]; then
-		[ "${3:-}" = --raw ] && raw=1
-	else
-		[[ "$dev" =~ $NAME_RE ]] || die "device name: letters, digits, - and _ (max 15)"
-		args="$dev"
-		if [ "$cmd" = limit ]; then
-			shift 3
-			[ $# -gt 0 ] || die "usage: vpn-sync limit <server> <device> [--daily SIZE] [--monthly SIZE] [--action alert|pause] | --clear"
-			while [ $# -gt 0 ]; do
-				case "$1" in
-					--clear) args="$args --clear" ;;
-					--daily|--monthly) [[ "${2:-}" =~ $SIZE_RE ]] || die "$1: a size like 500MB or 5GB (0 = none)"; args="$args $1 $2"; shift ;;
-					--action) [[ "${2:-}" =~ ^(alert|pause)$ ]] || die "--action: alert or pause"; args="$args --action $2"; shift ;;
-					*) die "unknown option: $1" ;;
-				esac
-				shift
-			done
-		fi
-	fi
-	load_server "$name"; connect "" >&2 || die "can't reach $name"
-	local sudo; sudo=$(sudo_prefix)
-	remote "test -x /usr/local/sbin/vpn-usage" </dev/null || die "$name doesn't have usage tracking yet (run: vpn-sync server install $name)"
-	if [ "$cmd" != usage ]; then
-		if [ "$cmd" = limit ] && [[ "$args" != *--clear* ]]; then # days follow this Mac's time zone
-			local tz; tz=$(readlink /etc/localtime 2>/dev/null | sed -n 's#.*/zoneinfo/##p')
-			[[ "$tz" =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ ]] && args="$args --tz $tz"
-		fi
-		remote "${sudo}/usr/local/sbin/vpn-usage $cmd $args" </dev/null 2>&1
-		return
-	fi
-	if [ $raw = 1 ]; then remote "${sudo}/usr/local/sbin/vpn-usage report" </dev/null; return; fi
-	remote "${sudo}/usr/local/sbin/vpn-usage report" </dev/null | awk -F'\t' '
-		function sz(b,  u, i) { split("B KB MB GB TB", u, " "); i=1; while (b >= 1024 && i < 5) { b/=1024; i++ }
-			return (i==1) ? sprintf("%d B", b) : sprintf("%.1f %s", b, u[i]) }
+# usage_table [only-limited] [device]: the report on stdin as a table, paused devices first,
+# then closest to a limit, then most data this month. Prints nothing when no device matches.
+usage_table() {
+	local rows
+	rows=$(awk -F'\t' -v only="${1:-0}" -v dev="${2:-}" '
+		function sz(b,  u, i, t) { split("B KB MB GB TB", u, " "); i=1; while (b >= 1024 && i < 5) { b/=1024; i++ }
+			if (i==1) return sprintf("%d B", b)
+			t=sprintf("%.1f", b); sub(/\.0$/, "", t); return t " " u[i] }
 		$1=="USAGE" { n[$2]=1; td[$2]=$3+$4; md[$2]=$5+$6 }
 		$1=="LIMIT" { n[$2]=1; ld[$2]=$3; lm[$2]=$4; la[$2]=$5 }
 		$1=="PAUSED" { n[$2]=1; p[$2]=$3 }
 		END {
-			printf "%-16s %10s %10s  %-28s %s\n", "DEVICE", "TODAY", "MONTH", "LIMIT", "STATE"
 			for (d in n) {
-				lim="-"
-				if (d in ld) { lim=""; if (ld[d]>0) lim="day " sz(ld[d]); if (lm[d]>0) lim=lim (lim==""?"":", ") "month " sz(lm[d]); lim=lim " (" la[d] ")" }
-				printf "%-16s %10s %10s  %-28s %s\n", d, sz(td[d]), sz(md[d]), lim, (d in p) ? "paused (" p[d] ")" : "active"
+				if (dev != "" && d != dev) continue
+				if (only && !(d in ld) && !(d in p)) continue
+				lim="-"; used="-"; f=0
+				if (d in ld) {
+					lim=""
+					if (ld[d] > 0) { lim=sz(ld[d]) "/day"; f=td[d]/ld[d]; used=sprintf("%d%% of day", f*100) }
+					if (lm[d] > 0) { lim=lim (lim=="" ? "" : ", ") sz(lm[d]) "/month"; g=md[d]/lm[d]
+						if (g > f || used == "-") { f=g; used=sprintf("%d%% of month", g*100) } }
+					lim=lim (la[d]=="pause" ? ", pause" : ", alert")
+				}
+				st="active"
+				if (d in p) st=(p[d]=="daily") ? "paused until midnight" : (p[d]=="monthly") ? "paused until the 1st" : "paused by you"
+				printf "%d\t%d\t%.0f\t%s\t%-16s %9s %9s  %-32s %-13s %s\n", (d in p) ? 0 : 1, f*1000, md[d], d,
+					d, sz(td[d]), sz(md[d]), lim, used, st
 			}
-		}'
+		}' | sort -t "$(printf '\t')" -k1,1n -k2,2nr -k3,3nr -k4,4 | cut -f5-)
+	[ -n "$rows" ] || return 1
+	printf '%-16s %9s %9s  %-32s %-13s %s\n' DEVICE TODAY MONTH LIMIT USED STATE
+	printf '%s\n' "$rows"
+}
+
+# usage_server usage|limits|show SERVER [raw|DEVICE]: one server's table (or raw report).
+usage_server() {
+	local cmd="$1" name="$2" extra="${3:-}" report
+	load_server "$name"; connect "" >&2 || die "can't reach $name"
+	remote "test -x /usr/local/sbin/vpn-usage" </dev/null || die "$name doesn't have usage tracking yet (run: vpn-sync server install $name)"
+	report=$(remote "$(sudo_prefix)/usr/local/sbin/vpn-usage report" </dev/null) || die "$name: couldn't read usage"
+	case "$cmd" in
+		usage) if [ "$extra" = raw ]; then printf '%s\n' "$report"; else printf '%s\n' "$report" | usage_table 0 || info "no data yet"; fi ;;
+		limits) printf '%s\n' "$report" | usage_table 1 || info "no limits or pauses" ;;
+		show) printf '%s\n' "$report" | usage_table 0 "$extra" || info "$extra: no data, limit or pause yet" ;;
+	esac
+}
+
+SIZE_RE='^[0-9]+(\.[0-9]+)?[KMGTkmgt]?([iI]?[bB])?$'
+usage_cmd() { # usage_cmd usage|limits [server...] [--raw] | limit|pause|resume SERVER DEVICE [options]
+	local cmd="$1"; shift
+	if [ "$cmd" = usage ] || [ "$cmd" = limits ]; then
+		local raw="" list=() s f rc=0
+		while [ $# -gt 0 ]; do
+			case "$1" in
+				--raw) [ "$cmd" = usage ] || die "--raw works with usage"; raw=raw ;;
+				-*) die "unknown option: $1" ;;
+				*) [[ "$1" =~ $SERVER_RE ]] || die "invalid server name: $1"; list+=("$1") ;;
+			esac
+			shift
+		done
+		if [ ${#list[@]} -eq 0 ]; then
+			for f in "$CONFIG_DIR"/*.conf; do [ -f "$f" ] && list+=("$(basename "$f" .conf)"); done
+		fi
+		[ ${#list[@]} -gt 0 ] || die "no servers configured (see: vpn-sync server add)"
+		[ -z "$raw" ] || [ ${#list[@]} -eq 1 ] || die "--raw needs exactly one server name"
+		for s in "${list[@]}"; do
+			if [ ${#list[@]} -gt 1 ]; then [ "$s" = "${list[0]}" ] || echo; info "$s"; fi
+			( usage_server "$cmd" "$s" "$raw" ) || rc=1
+		done
+		return $rc
+	fi
+	local name="${1:-}" dev="${2:-}" args=""
+	[ -n "$name" ] && [ -n "$dev" ] || die "usage: vpn-sync $cmd <server> <device>"
+	[[ "$dev" =~ $NAME_RE ]] || die "device name: letters, digits, - and _ (max 15)"
+	args="$dev"
+	if [ "$cmd" = limit ]; then
+		shift 2
+		if [ $# -eq 0 ]; then usage_server show "$name" "$dev"; return; fi
+		while [ $# -gt 0 ]; do
+			case "$1" in
+				--clear) args="$args --clear" ;;
+				--daily|--monthly) [[ "${2:-}" =~ $SIZE_RE ]] || die "$1: a size like 500MB or 5GB (0 = none)"; args="$args $1 $2"; shift ;;
+				--action) [[ "${2:-}" =~ ^(alert|pause)$ ]] || die "--action: alert or pause"; args="$args --action $2"; shift ;;
+				*) die "unknown option: $1" ;;
+			esac
+			shift
+		done
+	fi
+	load_server "$name"; connect "" >&2 || die "can't reach $name"
+	local sudo out; sudo=$(sudo_prefix)
+	remote "test -x /usr/local/sbin/vpn-usage" </dev/null || die "$name doesn't have usage tracking yet (run: vpn-sync server install $name)"
+	if [ "$cmd" = limit ] && [[ "$args" != *--clear* ]]; then # days follow this Mac's time zone
+		local tz; tz=$(readlink /etc/localtime 2>/dev/null | sed -n 's#.*/zoneinfo/##p')
+		[[ "$tz" =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ ]] && args="$args --tz $tz"
+	fi
+	out=$(remote "${sudo}/usr/local/sbin/vpn-usage $cmd $args" </dev/null 2>&1) || { printf '%s\n' "$out" >&2; exit 1; }
+	# "limit for tv: daily 1073741824, monthly 0, action pause" -> "tv: 1 GB a day, pauses at 100%"
+	printf '%s\n' "$out" | awk '
+		function sz(b,  u, i, t) { split("B KB MB GB TB", u, " "); i=1; while (b >= 1024 && i < 5) { b/=1024; i++ }
+			if (i==1) return sprintf("%d B", b)
+			t=sprintf("%.1f", b); sub(/\.0$/, "", t); return t " " u[i] }
+		/^limit for [^:]+: daily [0-9]+, monthly [0-9]+, action (alert|pause)$/ {
+			name=$3; sub(/:$/, "", name); d=$5; sub(/,$/, "", d); m=$7; sub(/,$/, "", m)
+			l=""; if (d > 0) l=sz(d) " a day"; if (m > 0) l=l (l=="" ? "" : " and ") sz(m) " a month"
+			print name ": " l ", " ($9=="pause" ? "pauses at 100%" : "alerts only"); next }
+		{ print }'
+	# where the device stands now
+	remote "${sudo}/usr/local/sbin/vpn-usage report" </dev/null | usage_table 0 "$dev" || true
 }
 
 case "${1:-}" in
 	status|watch) monitor "$@"; exit ;;
-	usage|limit|pause|resume) usage_cmd "$@"; exit ;;
+	usage|limits|limit|pause|resume) usage_cmd "$@"; exit ;;
 	service) shift; service_cmd "$@"; exit ;;
 	aws) shift; aws_cmd "$@"; exit ;;
 	geo) shift; geo_cmd "$@"; exit ;;
