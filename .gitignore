@@ -18,3 +18,4 @@ xcuserdata/
 *.vpnsync
 demo/build/
 ios/VPNSyncPhone/Assets.xcassets/AppIconLocal.appiconset/
+ios/build-device/
