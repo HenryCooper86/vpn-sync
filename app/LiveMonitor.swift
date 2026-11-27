@@ -82,10 +82,14 @@ final class ServerWatcher {
             if o != nil { vpns.append("OpenVPN") }
             if w != nil { vpns.append("WireGuard") }
             if k != nil { vpns.append("IKEv2") }
-            let from = o?.realIP ?? k.map(\.realIP) ?? w?.endpoint
+            // the first connection's address, with the device's own port when the server reports it
+            let first: (ip: String, port: Int?)? = o.map { ($0.realIP, $0.port) }
+                ?? k.flatMap { $0.realIP == "-" ? nil : ($0.realIP, $0.port) }
+                ?? w.flatMap { p in p.endpoint.map { ($0, p.port) } }
             let list = vpns.count <= 2 ? vpns.joined(separator: " and ")
                 : vpns.dropLast().joined(separator: ", ") + " and " + vpns.last!
-            let via = "\(list) from \(from.flatMap { $0 == "-" ? nil : withFlag($0) } ?? "an unknown address")"
+            let from = first.map { f in (GeoDB.shared.country(f.ip).map { flagEmoji($0) + " " } ?? "") + addressWithPort(f.ip, f.port) }
+            let via = "\(list) from \(from ?? "an unknown address")"
             return (n, via, rates[n])
         }
     }

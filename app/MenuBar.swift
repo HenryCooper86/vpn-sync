@@ -201,6 +201,7 @@ struct MenuBarPanel: View {
                     .help("Remove \(s) from VPN Sync")
                     .accessibilityLabel("Remove \(s)")
             }
+            if let ports = w?.ports, !ports.isEmpty { PanelPorts(ports: ports, server: s) }
             if renaming == s {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 6) {
@@ -256,7 +257,9 @@ struct MenuBarPanel: View {
                                         Text(d.name).font(.system(size: 13, weight: .semibold, design: .rounded))
                                         if let p = m.usageByServer[s]?.paused[d.name] { PausedBadge(info: p) }
                                     }
+                                    // shortened in the middle, so the device's port at the end stays visible
                                     Text(d.via).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                        .minimumScaleFactor(0.85).truncationMode(.middle).help(d.via)
                                 }
                                 Spacer(minLength: 6)
                                 Sparkline(history: w?.deviceHistory[d.name] ?? [], name: d.name, width: 56, height: 20)
@@ -342,6 +345,38 @@ struct MenuBarPanel: View {
         case .retrying: return "unreachable"
         case .off: return "not monitored"
         }
+    }
+}
+
+/// A server's listening ports on its menu bar card: small chips, wrapping to a second line if needed.
+struct PanelPorts: View {
+    let ports: [ServerPort]
+    let server: String
+    private var items: [(String, String)] {
+        ["openvpn", "wireguard", "ipsec", "ssh"].compactMap { v in ports.text(v).map { (portLabel(v), $0) } }
+    }
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) { chips }
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) { ForEach(items.prefix(2), id: \.0) { chip($0.0, $0.1) } }
+                HStack(spacing: 6) { ForEach(items.dropFirst(2), id: \.0) { chip($0.0, $0.1) } }
+            }
+        }
+        .help("Ports \(server) listens on; its firewall must allow them. Each device line shows the device's own address and port.")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Ports: " + items.map { "\($0.0) \($0.1)" }.joined(separator: ", "))
+    }
+    @ViewBuilder private var chips: some View { ForEach(items, id: \.0) { chip($0.0, $0.1) } }
+    private func chip(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 4) {
+            Text(label).foregroundStyle(.secondary)
+            Text(value).fontWeight(.semibold).monospacedDigit()
+        }
+        .font(.system(size: 10.5, design: .rounded))
+        .lineLimit(1).fixedSize()
+        .padding(.horizontal, 7).padding(.vertical, 3)
+        .background(.secondary.opacity(0.12), in: Capsule())
     }
 }
 
