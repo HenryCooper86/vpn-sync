@@ -186,3 +186,7 @@ app has the same demo with the launch argument `-demo YES`.
 [Libreswan](https://libreswan.org), [swift-nio-ssh](https://github.com/apple/swift-nio-ssh),
 [Lucide](https://lucide.dev) icons (ISC),
 [ip-location-db](https://github.com/sapics/ip-location-db) (PDDL).
+
+## License
+
+MIT, see [LICENSE](LICENSE). The installers it drives (Nyr, hwdsl2) keep their own licences.
