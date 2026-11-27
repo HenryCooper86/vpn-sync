@@ -99,6 +99,23 @@ with a tunnel narrowing to a lit keyhole, is drawn by `app/make-icon.swift`.
    servers from the server name menu; edit IP, key or user in **Servers**. A device's
    **⋯** menu has **Pause Internet** and **Set Usage Limit…**.
 
+## iPhone app
+
+`ios/` holds a companion app for the same servers: who's online (live), speed, data per device
+and per day, usage limits, pause/resume, adding and removing devices, service start/stop and
+reboot, and each device's profiles (WireGuard QR code, `.conf`, `.ovpn`, IKEv2 `.mobileconfig`,
+`.sswan`, `.p12`) to share. It connects to the servers over SSH itself (Apple's swift-nio-ssh;
+Ed25519 keys, pinned host keys, through the jump server when needed), so the Mac doesn't have
+to be on.
+
+1. On the Mac: **Settings → iPhone → Export for iPhone…** writes an encrypted
+   `VPN Sync servers.vpnsync` (AES-GCM, key from a passphrase shown once) and offers AirDrop.
+2. Open the file on the iPhone with VPN Sync and type the passphrase. Keys go to the iPhone's
+   Keychain (this device only); Face ID locks the app.
+3. Build: open `ios/VPNSyncPhone.xcodeproj` in Xcode, put your team in `ios/Local.xcconfig`
+   (`DEVELOPMENT_TEAM = …`, git-ignored) and run it on your iPhone. With a free Apple ID it has
+   to be reinstalled every 7 days. Design notes: `docs/ios-app.md`.
+
 ## Command line
 
 ```

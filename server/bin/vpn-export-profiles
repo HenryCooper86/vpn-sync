@@ -1,24 +1,55 @@
 #!/usr/bin/env bash
-# vpn-export-profiles — write a tar.gz of all client profiles to stdout:
-#   OpenVPN/<name>.ovpn   WireGuard/<name>.conf   WireGuard/<name>-wireguard-qr.png
-#   IKEv2/<name>.mobileconfig (macOS, iOS)   IKEv2/<name>.sswan (Android)   IKEv2/<name>.p12 (Windows)
+# vpn-export-profiles — client profiles:
+#   vpn-export-profiles                 a tar.gz of all of them on stdout:
+#     OpenVPN/<name>.ovpn   WireGuard/<name>.conf   WireGuard/<name>-wireguard-qr.png
+#     IKEv2/<name>.mobileconfig (macOS, iOS)   IKEv2/<name>.sswan (Android)   IKEv2/<name>.p12 (Windows)
+#   vpn-export-profiles --list          one line per device (tab separated):
+#                                       DEVICE <name> <openvpn 0|1> <wireguard 0|1> <ikev2 0|1>
+#   vpn-export-profiles --device NAME   that device's files as an uncompressed tar (same layout)
 set -euo pipefail
 # shellcheck source=../lib/common.sh
 . "${VPN_SYNC_LIB:-/usr/local/lib/vpn-sync}/common.sh"
 require_root
 
+mode=all device=""
+case "${1:-}" in
+	--list) mode=list ;;
+	--device) mode=device; device="${2:-}"
+		[[ "$device" =~ $NAME_RE ]] || { echo "invalid device name" >&2; exit 64; } ;;
+	"") ;;
+	*) echo "usage: vpn-export-profiles [--list | --device NAME]" >&2; exit 64 ;;
+esac
+
+if [[ $mode == list ]]; then
+	{
+		while IFS= read -r f; do n=${f##*/}; echo "${n%.ovpn}	o"; done < <(ovpn_profiles)
+		while IFS= read -r f; do n=${f##*/}; echo "${n%.conf}	w"; done < <(wg_profiles)
+		while IFS= read -r f; do n=${f##*/}; echo "${n%.mobileconfig}	i"; done < <(ikev2_profiles)
+	} | awk -F'\t' '{ seen[$1]=1; has[$1, $2]=1 }
+		END { for (n in seen) printf "DEVICE\t%s\t%d\t%d\t%d\n", n, has[n, "o"], has[n, "w"], has[n, "i"] }' | sort
+	exit 0
+fi
+
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 chmod 700 "$stage"
 mkdir -p "$stage/OpenVPN" "$stage/WireGuard" "$stage/IKEv2"
-while IFS= read -r f; do cp -p "$f" "$stage/OpenVPN/"; done < <(ovpn_profiles)
+mine() { [[ $mode == all ]] && return 0; local n=${1##*/}; [[ "${n%.*}" == "$device" ]]; }
+while IFS= read -r f; do mine "$f" && cp -p "$f" "$stage/OpenVPN/"; done < <(ovpn_profiles)
 while IFS= read -r f; do
+	mine "$f" || continue
 	cp -p "$f" "$stage/WireGuard/"
 	qr="${f%.conf}-wireguard-qr.png"
 	[[ -f "$qr" ]] && cp -p "$qr" "$stage/WireGuard/"
 done < <(wg_profiles)
 while IFS= read -r f; do
+	mine "$f" || continue
 	b="${f%.mobileconfig}"
 	for x in "$f" "$b.sswan" "$b.p12"; do [[ -f "$x" ]] && cp -p "$x" "$stage/IKEv2/"; done
 done < <(ikev2_profiles)
-tar czf - -C "$stage" OpenVPN WireGuard IKEv2
+if [[ $mode == device ]]; then
+	[[ -n "$(ls -A "$stage/OpenVPN" "$stage/WireGuard" "$stage/IKEv2")" ]] || { echo "no device named '$device'" >&2; exit 66; }
+	tar cf - -C "$stage" OpenVPN WireGuard IKEv2
+else
+	tar czf - -C "$stage" OpenVPN WireGuard IKEv2
+fi

@@ -2,32 +2,6 @@
 // ~/.config/vpn-sync/stats/<server>.json), plus the server's own totals from vnstat.
 import Foundation
 
-struct TrafficPoint: Identifiable, Equatable {
-    let time: Date
-    let down: Double      // bytes/s, all devices
-    let up: Double
-    var online: Int = 0   // devices connected at that moment
-    var id: Date { time }
-}
-
-/// Server traffic for one day (vnstat; in = received, out = sent).
-struct DayTraffic: Identifiable, Equatable {
-    let day: String       // yyyy-mm-dd
-    let rx: Int64
-    let tx: Int64
-    var id: String { day }
-    var total: Int64 { rx + tx }
-    var date: Date {
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.locale = Locale(identifier: "en_US_POSIX")
-        return f.date(from: day) ?? Date()
-    }
-}
-
-struct ServerTotals: Equatable {
-    let iface: String
-    let todayRx: Int64, todayTx: Int64, monthRx: Int64, monthTx: Int64
-}
-
 struct ByteCount: Codable, Equatable {
     var down: Int64 = 0
     var up: Int64 = 0

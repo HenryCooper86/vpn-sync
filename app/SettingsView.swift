@@ -27,11 +27,14 @@ struct SettingsView: View {
             LimitsSettings()
                 .tabItem { Label { Text("Limits") } icon: { Lucide.image("gauge", size: 18) } }
                 .tag("limits")
+            PhoneSettings()
+                .tabItem { Label { Text("iPhone") } icon: { Lucide.image("smartphone", size: 18) } }
+                .tag("iphone")
             LightsailSettings()
                 .tabItem { Label { Text("Lightsail") } icon: { Lucide.image("cloud", size: 18) } }
                 .tag("lightsail")
         }
-        .task {   // test hook: VPNSYNC_SETTINGS_TAB=general|limits|lightsail, for screenshots
+        .task {   // test hook: VPNSYNC_SETTINGS_TAB=general|limits|iphone|lightsail, for screenshots
             if let t = ProcessInfo.processInfo.environment["VPNSYNC_SETTINGS_TAB"] { tab = t }
         }
         .frame(width: 560)
@@ -229,6 +232,118 @@ struct LimitsSettings: View {
                 .accessibilityLabel("Limit options for \(n) on \(s)")
         }
         .help("\(formatBytes(used.today)) today, \(formatBytes(used.month)) this month")
+    }
+}
+
+/// Exports the servers (address, login, pinned host key, private key) for the iPhone app, in a
+/// file encrypted with a passphrase shown here once.
+struct PhoneSettings: View {
+    @EnvironmentObject var m: Model
+    @State private var chosen: Set<String> = []
+    @State private var problems: [String: String] = [:]
+    @State private var passphrase: String?
+    @State private var file: URL?
+    @State private var error: String?
+
+    var body: some View {
+        Form {
+            Section {
+                Text("The VPN Sync iPhone app connects to your servers over SSH itself, so it needs their addresses and keys. Export them to an encrypted file, AirDrop it to the iPhone, open it with VPN Sync and type the passphrase.")
+                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(m.servers, id: \.self) { s in
+                    HStack {
+                        Toggle(s, isOn: Binding(get: { chosen.contains(s) }, set: { if $0 { chosen.insert(s) } else { chosen.remove(s) } }))
+                            .disabled(problems[s] != nil)
+                        Spacer()
+                        if let p = problems[s] { Text(p).font(.caption).foregroundStyle(.red) }
+                        else if let j = configValue("JUMP", server: s), !j.isEmpty { Text("through \(j)").font(.caption).foregroundStyle(.secondary) }
+                    }
+                }
+                HStack {
+                    Text("Includes each server's private key. Anyone with the file and the passphrase can log in to these servers.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button("Export for iPhone…") { export() }
+                        .glassButton(prominent: true)
+                        .disabled(chosen.isEmpty)
+                }
+            }
+            if let passphrase, let file {
+                Section("Passphrase") {
+                    HStack {
+                        Text(passphrase).font(.system(size: 22, weight: .semibold, design: .monospaced)).textSelection(.enabled)
+                        Spacer()
+                        Button("Copy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(passphrase, forType: .string) }
+                    }
+                    Text("Type it on the iPhone when VPN Sync asks. It isn't saved anywhere; export again for a new one.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        Text(file.lastPathComponent).font(.callout)
+                        Spacer()
+                        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([file]) }
+                        Button("AirDrop…") { NSSharingService(named: .sendViaAirDrop)?.perform(withItems: [file]) }
+                            .glassButton(prominent: true)
+                    }
+                    Text("Delete the file after importing it.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let error { Text(error).foregroundStyle(.red) }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .frame(height: 460)
+        .onAppear { check() }
+    }
+
+    /// Which servers can be exported (an Ed25519 OpenSSH key and an Ed25519 pinned host key).
+    private func check() {
+        problems = [:]
+        for s in m.servers {
+            do { _ = try exported(s) } catch { problems[s] = error.localizedDescription }
+        }
+        chosen = Set(m.servers.filter { problems[$0] == nil })
+    }
+
+    private struct ExportError: LocalizedError { let errorDescription: String? }
+
+    private func exported(_ s: String) throws -> ExportedServer {
+        func v(_ k: String) -> String? { configValue(k, server: s).flatMap { $0.isEmpty ? nil : $0 } }
+        guard let host = v("HOST"), let keyPath = v("SSH_KEY") else { throw ExportError(errorDescription: "incomplete settings") }
+        let path = keyPath.replacingOccurrences(of: "$HOME", with: NSHomeDirectory())
+            .replacingOccurrences(of: "~", with: NSHomeDirectory())
+        guard let key = try? String(contentsOfFile: path, encoding: .utf8) else { throw ExportError(errorDescription: "key file not found") }
+        do { _ = try OpenSSHKey.ed25519(fromPEM: key) } catch { throw ExportError(errorDescription: error.localizedDescription) }
+        let alias = v("HOST_ALIAS") ?? s.lowercased()
+        let known = (try? String(contentsOf: configDir.appendingPathComponent("known_hosts"), encoding: .utf8)) ?? ""
+        let pin = known.split(separator: "\n").compactMap { line -> String? in
+            let f = line.split(separator: " ")
+            guard f.count >= 3, f[1] == "ssh-ed25519" else { return nil }
+            let names = f[0].split(separator: ",").map { $0.replacingOccurrences(of: "[", with: "").components(separatedBy: "]:")[0] }
+            return names.contains(alias) ? "\(f[1]) \(f[2])" : nil
+        }.first
+        guard let pin else { throw ExportError(errorDescription: "no Ed25519 host key pinned") }
+        let last = (try? String(contentsOf: configDir.appendingPathComponent("\(s).last-ip"), encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return ExportedServer(name: s, host: host, user: v("SSH_USER") ?? "ubuntu", port: Int(v("SSH_PORT") ?? "22") ?? 22,
+                              jump: v("JUMP"), privateIP: v("PRIVATE_IP"), lastIP: last, hostKey: pin, key: key)
+    }
+
+    private func export() {
+        error = nil
+        do {
+            // a jump server travels with the servers that need it
+            var names = chosen
+            for s in chosen { if let j = configValue("JUMP", server: s), !j.isEmpty { names.insert(j) } }
+            let list = try m.servers.filter { names.contains($0) }.map(exported)
+            let phrase = ServerBundle.makePassphrase()
+            let data = try ServerBundle.seal(list, passphrase: phrase)
+            let url = desktopDir.appendingPathComponent("VPN Sync servers.vpnsync")
+            try data.write(to: url, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            passphrase = phrase; file = url
+        } catch {
+            self.error = "Not exported: \(error.localizedDescription)"
+        }
     }
 }
 

@@ -12,12 +12,6 @@ enum TrafficColor {
     static func daily(_ dark: Bool) -> Color { dark ? Color(hex: 0x9085E9) : Color(hex: 0x6250D6) }
 }
 
-func formatBytes(_ b: Int64) -> String {
-    if b == 0 { return "0 B" }                 // ByteCountFormatter says "Zero KB"
-    let f = ByteCountFormatter(); f.countStyle = .binary
-    return f.string(fromByteCount: b)
-}
-
 extension Model {
     var history: [TrafficPoint] { live?.history ?? [] }
     var trafficStats: TrafficStats { live?.stats ?? TrafficStats() }
