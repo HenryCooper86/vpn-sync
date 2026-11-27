@@ -89,6 +89,7 @@ func showMainWindow(_ openWindow: OpenWindowAction) {
 struct MenuBarPanel: View {
     @ObservedObject var m: Model
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @Environment(\.theme) private var theme
     /// Server waiting for removal confirmation (inline: alerts tend to close menu bar panels).
     @State private var confirmRemove: String?
@@ -120,6 +121,9 @@ struct MenuBarPanel: View {
                 Button { showMainWindow(openWindow) } label: { Label("Open VPN Sync", lucide: "app-window") }
                     .glassButton(prominent: true)
                 Spacer()
+                Button { NSApp.activate(ignoringOtherApps: true); openSettings() } label: { Label("Settings", lucide: "settings") }
+                    .labelStyle(.iconOnly).glassButton()
+                    .help("Settings: notifications, usage limits, iPhone export, Lightsail")
                 Button("Quit") { NSApp.terminate(nil) }.glassButton()
             }
         }
@@ -377,6 +381,18 @@ func openSheetPreviewIfRequested(_ m: Model) {
 
 extension Notification.Name {
     static let vpnSyncOpenSettings = Notification.Name("vpnSyncOpenSettings")
+}
+
+/// A gear that opens Settings (⌘,) and brings it to the front.
+struct SettingsButton: View {
+    @Environment(\.openSettings) private var openSettings
+    var body: some View {
+        Button { NSApp.activate(ignoringOtherApps: true); openSettings() } label: { LucideIcon("settings") }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("Settings (⌘,): notifications, usage limits, iPhone export, Lightsail")
+            .accessibilityLabel("Settings")
+    }
 }
 
 /// Opens Settings when asked (test hook), using SwiftUI's own openSettings action.

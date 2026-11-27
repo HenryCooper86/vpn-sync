@@ -990,9 +990,12 @@ struct ContentView: View {
                             Divider()
                             Button("Add Server…") { m.showAddServer = true }
                             Button("Manage Servers…") { m.showServers = true }
+                            Divider()
+                            SettingsLink { Text("Settings…") }
                         } label: {
                             HStack(spacing: 6) {
                                 Text(m.server).font(.system(size: 24, weight: .bold, design: .rounded))
+                                    .lineLimit(1).minimumScaleFactor(0.7)
                                 LucideIcon("chevron-down").font(.system(size: 12, weight: .bold)).foregroundStyle(.secondary)
                             }
                         }
@@ -1026,7 +1029,10 @@ struct ContentView: View {
             }
             Spacer(minLength: 12)
             VStack(alignment: .trailing, spacing: 12) {
-                StatusPill(status: m.status)
+                HStack(spacing: 10) {
+                    SettingsButton()
+                    StatusPill(status: m.status)
+                }
                 HStack(spacing: 8) {
                     if m.busy { ProgressView().controlSize(.small) }
                     Button { Task { await m.check() } } label: { Label("Check", lucide: "search") }
