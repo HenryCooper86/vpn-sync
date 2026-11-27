@@ -36,6 +36,7 @@ It can also set up a fresh server for you.
 | **Usage limits** | A daily or monthly limit per device that alerts you at 80% and 100%, or also pauses it. Pause or resume any device's internet by hand; it stays connected and nothing is revoked. |
 | **Devices and profiles** | Add, batch add, remove and batch remove devices on every VPN at once. WireGuard QR codes for phones and TVs, IKEv2 profiles that install natively on iPhone, Mac, Android and Windows. |
 | **IP changes handled** | Each server rewrites its own profiles when its address changes; the Mac pulls fresh copies, fixes OpenVPN Connect and, with a read-only Lightsail key, finds a stopped-and-started server's new IP on its own. |
+| **Start and stop servers** | Stop a Lightsail server you don't need and start it again from the Mac, the menu bar or the iPhone; VPN Sync shows it as stopped instead of unreachable, and after a start it finds the new IP and resyncs. |
 | **Install or adopt** | Install OpenVPN and/or WireGuard (Nyr) and optionally IPsec/IKEv2 (hwdsl2, IKEv2-only) with your choice of ports and DNS, or keep what's already there. |
 | **iPhone app** | The same servers on your phone over SSH, without the Mac. |
 | **Command line** | Everything the apps do, as `vpn-sync` on the Mac and small tools on each server. |
@@ -105,7 +106,10 @@ Mac installs the tools; nothing to do on the server yourself.
    offers AirDrop. Open it on the phone with VPN Sync and type the passphrase the Mac shows.
 
 Settings (the gear, or ⌘,) also has notifications, usage-limit alerts and the warning level,
-the appearance, and a read-only Lightsail key for finding new IPs.
+the appearance, and a Lightsail key: with it VPN Sync finds a server's new IP after a stop and
+start, and **Power → Stop Server / Start Server** work (the policy it shows allows only reading,
+stopping and starting instances). To use them on the iPhone, tick **Include the Lightsail key**
+when exporting.
 
 ## Command line
 
@@ -124,6 +128,7 @@ vpn-sync service <server> <openvpn|wireguard|ipsec|all> <start|stop|restart|stat
 vpn-sync reboot <server>
 vpn-sync server list | add | edit | rename | remove | hostkey | probe | install
 vpn-sync server install <server> --ipsec   also install IPsec/IKEv2 (kept once installed)
+vpn-sync aws state | stop | start <server> a Lightsail server's state; stop or start it (--wait)
 ```
 
 Run `vpn-sync --help` for everything. On a server, `sudo vpn-usage show` prints a usage table and

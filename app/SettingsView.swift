@@ -7,7 +7,9 @@ let lightsailPolicy = """
 {
   "Version": "2012-10-17",
   "Statement": [
-    { "Effect": "Allow", "Action": "lightsail:GetInstance", "Resource": "*" }
+    { "Effect": "Allow",
+      "Action": ["lightsail:GetInstance", "lightsail:StopInstance", "lightsail:StartInstance"],
+      "Resource": "*" }
   ]
 }
 """
@@ -244,6 +246,8 @@ struct PhoneSettings: View {
     @State private var passphrase: String?
     @State private var file: URL?
     @State private var error: String?
+    @State private var includeAWS = false
+    @State private var hasAWS = false
 
     var body: some View {
         Form {
@@ -259,6 +263,11 @@ struct PhoneSettings: View {
                         else if let j = configValue("JUMP", server: s), !j.isEmpty { Text("through \(j)").font(.caption).foregroundStyle(.secondary) }
                     }
                 }
+                Toggle("Include the Lightsail key", isOn: $includeAWS)
+                    .disabled(!hasAWS)
+                Text(hasAWS ? "Lets the iPhone stop and start your Lightsail servers. The key goes into the encrypted file and then the iPhone's Keychain."
+                            : "Save a Lightsail key in the Lightsail tab first to stop and start servers from the iPhone.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Text("Includes each server's private key. Anyone with the file and the passphrase can log in to these servers.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -292,7 +301,25 @@ struct PhoneSettings: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .frame(height: 460)
-        .onAppear { check() }
+        .onAppear { check(); hasAWS = PhoneSettings.lightsailKey() != nil }
+    }
+
+    /// The Lightsail key the vpn-sync command saved in the Keychain (read with /usr/bin/security,
+    /// which created the item, so macOS doesn't ask).
+    static func lightsailKey() -> AWSKey? {
+        func run(_ args: [String]) -> String? {
+            let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/security"); p.arguments = args
+            let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
+            guard (try? p.run()) != nil else { return nil }
+            let d = out.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+            return p.terminationStatus == 0 ? String(decoding: d, as: UTF8.self) : nil
+        }
+        guard let info = run(["find-generic-password", "-s", "vpn-sync-lightsail"]),
+              let r = info.range(of: #""acct"<blob>="([^"]+)""#, options: .regularExpression),
+              let secret = run(["find-generic-password", "-s", "vpn-sync-lightsail", "-w"])?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !secret.isEmpty else { return nil }
+        let id = String(info[r]).replacingOccurrences(of: #""acct"<blob>=""#, with: "").replacingOccurrences(of: "\"", with: "")
+        return AWSKey(keyID: id, secret: secret)
     }
 
     /// Which servers can be exported (an Ed25519 OpenSSH key and an Ed25519 pinned host key).
@@ -325,7 +352,8 @@ struct PhoneSettings: View {
         let last = (try? String(contentsOf: configDir.appendingPathComponent("\(s).last-ip"), encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return ExportedServer(name: s, host: host, user: v("SSH_USER") ?? "ubuntu", port: Int(v("SSH_PORT") ?? "22") ?? 22,
-                              jump: v("JUMP"), privateIP: v("PRIVATE_IP"), lastIP: last, hostKey: pin, key: key)
+                              jump: v("JUMP"), privateIP: v("PRIVATE_IP"), lastIP: last, hostKey: pin, key: key,
+                              region: v("LIGHTSAIL_REGION"), instance: v("LIGHTSAIL_REGION") == nil ? nil : (v("LIGHTSAIL_INSTANCE") ?? s))
     }
 
     private func export() {
@@ -336,7 +364,8 @@ struct PhoneSettings: View {
             for s in chosen { if let j = configValue("JUMP", server: s), !j.isEmpty { names.insert(j) } }
             let list = try m.servers.filter { names.contains($0) }.map(exported)
             let phrase = ServerBundle.makePassphrase()
-            let data = try ServerBundle.seal(list, passphrase: phrase)
+            let aws = includeAWS ? PhoneSettings.lightsailKey() : nil
+            let data = try ServerBundle.seal(list, aws: aws, passphrase: phrase)
             let url = desktopDir.appendingPathComponent("VPN Sync servers.vpnsync")
             try data.write(to: url, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
@@ -363,7 +392,7 @@ struct LightsailSettings: View {
     var body: some View {
         Form {
             Section {
-                Text("When a server without a static IP is stopped and started, it comes back with a new IP. With a read-only AWS key, VPN Sync asks Lightsail for the new address, reconnects, and updates the profiles on your Desktop on its own.")
+                Text("With an AWS key for Lightsail, VPN Sync can stop and start your servers (Power → Stop Server / Start Server, and Start in the menu bar), shows when one is stopped, and finds a server's new IP after a stop and start: it reconnects and updates the profiles on your Desktop on its own.")
                     .fixedSize(horizontal: false, vertical: true)
                 if let savedKey {
                     LabeledContent("Saved key", value: savedKey)
@@ -401,12 +430,12 @@ struct LightsailSettings: View {
             if let message {
                 Text(message.text).foregroundStyle(message.ok ? .green : .red)
             }
-            Section("How to create a read-only key") {
+            Section("How to create the key") {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("1. In the AWS console open IAM → Users → Create user (e.g. vpn-sync), without console access.")
                     Text("2. Permissions: Attach policies directly → Create policy → JSON, paste the policy below, and attach it.")
                     Text("3. Open the user → Security credentials → Create access key → \"Other\", then paste the two values above.")
-                    Text("The key can only read instance details, so it can't change or delete anything in your account.")
+                    Text("The key can read instance details and stop or start instances; it can't create, change or delete anything. To limit it to your VPN servers, replace * with their instance ARNs. Without the stop and start permissions, only the IP lookup works.")
                         .foregroundStyle(.secondary)
                 }
                 .font(.callout)

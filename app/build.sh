@@ -7,7 +7,7 @@ rm -rf build
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build/AppIcon.iconset
 
 swiftc -swift-version 5 -O -parse-as-library -target arm64-apple-macos14.0 \
-	-o "$APP/Contents/MacOS/VPNSync" VPNSync.swift ServerViews.swift LiveMonitor.swift MenuBar.swift SettingsView.swift Theme.swift Icons.swift Stats.swift TrafficView.swift DeviceKind.swift Geo.swift Usage.swift ../shared/*.swift
+	-o "$APP/Contents/MacOS/VPNSync" VPNSync.swift ServerViews.swift LiveMonitor.swift MenuBar.swift SettingsView.swift Theme.swift Icons.swift Stats.swift TrafficView.swift DeviceKind.swift Geo.swift Usage.swift Lightsail.swift ../shared/*.swift
 cp Info.plist "$APP/Contents/Info.plist"
 mkdir -p "$APP/Contents/Resources/lucide"
 cp lucide/*.svg "$APP/Contents/Resources/lucide/"

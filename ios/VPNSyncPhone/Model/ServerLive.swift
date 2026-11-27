@@ -161,6 +161,11 @@ final class ServerLive: ObservableObject, Identifiable {
                 if Task.isCancelled { return }
                 store.disconnect(name)
                 link = .retrying(error.localizedDescription)
+                // stopped in Lightsail, or back with a new IP (taken from Lightsail)?
+                if let i = await store.refreshInstance(name), i.isDown {
+                    link = .retrying("The server is \(i.label).")
+                    delay = 30
+                }
             }
             try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
             delay = min(delay * 2, 30)

@@ -177,6 +177,13 @@ struct MenuBarPanel: View {
                         .font(.system(.caption, design: .rounded)).foregroundStyle(.secondary)
                 }
                 Spacer()
+                if m.instanceStates[s]?.state == "stopped" {
+                    Button("Start") { Task { await m.powerServer(s, start: true) } }
+                        .glassButton(prominent: true)
+                        .controlSize(.small)
+                        .disabled(m.busy)
+                        .help("Start the Lightsail instance \(s)")
+                }
                 Button {
                     removeError = nil; confirmRemove = nil
                     if renaming == s { renaming = nil } else { renaming = s; newName = s; nameFocused = true }
@@ -326,6 +333,7 @@ struct MenuBarPanel: View {
         }
     }
     private func linkText(_ w: ServerWatcher?, count: Int) -> String {
+        if let s = w?.server, let st = m.instanceStates[s], !st.isRunning { return st.label }
         switch w?.link ?? .off {
         case .live:
             let paused = w.flatMap { m.usageByServer[$0.server]?.paused.count } ?? 0

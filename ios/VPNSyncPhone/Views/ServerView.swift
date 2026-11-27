@@ -20,6 +20,7 @@ struct ServerView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header
+                stoppedBanner
                 servicesRow
                 Picker("Section", selection: $tab) {
                     ForEach(Tab.allCases, id: \.self) { t in
@@ -58,6 +59,14 @@ struct ServerView: View {
                     Divider()
                     Button("Restart All VPNs…", systemImage: "arrow.triangle.2.circlepath") { confirm = ServiceAction(server: name, vpn: "all", action: "restart") }
                     Button("Reboot Server…", systemImage: "power", role: .destructive) { confirm = ServiceAction(server: name, vpn: "reboot", action: "reboot") }
+                    if store.canPower(name) {
+                        let st = store.instances[name]
+                        Divider()
+                        Button("Stop Server…", systemImage: "stop.circle", role: .destructive) { confirm = ServiceAction(server: name, vpn: "instance", action: "stop") }
+                            .disabled(st?.isDown == true || st?.state == "pending")
+                        Button("Start Server", systemImage: "play.circle") { run(ServiceAction(server: name, vpn: "instance", action: "start")) }
+                            .disabled(st?.isRunning == true || st?.state == "pending" || st?.state == "stopping")
+                    }
                 } label: { Image(systemName: "ellipsis.circle") }
                 .accessibilityLabel("Server actions")
             }
@@ -91,13 +100,16 @@ struct ServerView: View {
         .sheet(isPresented: $adding) { AddDeviceSheet(server: name, live: live) }
         .confirmationDialog(confirmTitle, isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } }), titleVisibility: .visible) {
             if let a = confirm {
-                Button(a.action == "reboot" ? "Reboot" : a.action.capitalized, role: a.action == "start" ? nil : .destructive) { run(a) }
+                Button(a.vpn == "instance" ? "Stop Server" : a.action == "reboot" ? "Reboot" : a.action.capitalized, role: a.action == "start" ? nil : .destructive) { run(a) }
             }
         } message: {
-            Text(confirm?.action == "reboot" ? "Every device is disconnected for about a minute." : "Devices on it reconnect on their own.")
+            Text(confirm?.vpn == "instance"
+                 ? "The Lightsail instance shuts down: every device is disconnected until you start it again." + (store.instances[name]?.staticIP == true ? "" : " Without a static IP it gets a new address when it starts; phones and TVs then need their WireGuard and IKEv2 profiles again.")
+                 : confirm?.action == "reboot" ? "Every device is disconnected for about a minute." : "Devices on it reconnect on their own.")
         }
         .overlay(alignment: .bottom) { if let busy { ProgressView(busy).padding().card(16, padding: 4).padding() } }
         .onAppear { openRequestedTab() }
+        .task { await store.refreshInstance(name) }
     }
 
     private var activityCount: Int { live.events.count + live.usageEvents.count }
@@ -190,10 +202,45 @@ struct ServerView: View {
     private var confirmTitle: String {
         guard let a = confirm else { return "" }
         if a.action == "reboot" { return "Reboot \(name)?" }
+        if a.vpn == "instance" { return "Stop the server \(name)?" }
         return "\(a.action.capitalized) \(a.vpnLabel) on \(name)?"
     }
 
+    /// "Tokyo is stopped" with a Start button, when Lightsail says so.
+    @ViewBuilder private var stoppedBanner: some View {
+        if let st = store.instances[name], !st.isRunning {
+            HStack(spacing: 12) {
+                Image(systemName: st.state == "pending" ? "arrow.clockwise.circle" : "power.circle").font(.title2).foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(name) is \(st.label)").font(.subheadline.weight(.semibold))
+                    Text(st.state == "pending" ? "It's booting; this reconnects when it's ready." : "No device can connect while it's stopped.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if st.state == "stopped", store.canPower(name) {
+                    Button("Start") { run(ServiceAction(server: name, vpn: "instance", action: "start")) }
+                        .buttonStyle(.borderedProminent).disabled(busy != nil)
+                } else if st.state != "stopped" {
+                    ProgressView()
+                }
+            }
+            .card()
+        }
+    }
+
     private func run(_ a: ServiceAction) {
+        if a.vpn == "instance" {
+            confirm = nil
+            busy = a.action == "start" ? "Starting \(name)… this takes a minute or two." : "Stopping \(name)…"
+            Task {
+                defer { busy = nil }
+                do {
+                    try await store.power(name, start: a.action == "start")
+                    store.show(a.action == "start" ? "\(name) is running again." : "\(name) is stopping.")
+                } catch { store.show(error.localizedDescription) }
+            }
+            return
+        }
         confirm = nil
         busy = a.action == "reboot" ? "Rebooting…" : "\(a.action.capitalized)ing \(a.vpnLabel)…"
         Task {

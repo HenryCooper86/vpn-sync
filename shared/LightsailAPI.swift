@@ -1,0 +1,108 @@
+// Shared by the Mac and iPhone apps (Foundation, CryptoKit).
+// AWS Signature Version 4 and the three Lightsail calls VPN Sync uses: GetInstance (state and
+// IP), StopInstance and StartInstance.
+import Foundation
+import CryptoKit
+
+struct AWSKey: Codable, Hashable {
+    var keyID: String
+    var secret: String
+}
+
+enum SigV4 {
+    static func hex(_ d: some Sequence<UInt8>) -> String { d.map { String(format: "%02x", $0) }.joined() }
+    static func sha256(_ d: Data) -> String { hex(SHA256.hash(data: d)) }
+    static func hmac(_ key: Data, _ msg: String) -> Data {
+        Data(HMAC<SHA256>.authenticationCode(for: Data(msg.utf8), using: SymmetricKey(data: key)))
+    }
+
+    /// The Authorization header for a request. `headers` are the headers to sign (names are
+    /// lower-cased here; include host and x-amz-date). `date` is yyyyMMdd'T'HHmmss'Z'.
+    static func authorization(method: String, path: String, query: String, headers: [String: String],
+                              body: Data, region: String, service: String, date: String, key: AWSKey) -> String {
+        let h = Dictionary(uniqueKeysWithValues: headers.map { ($0.key.lowercased(), $0.value.trimmingCharacters(in: .whitespaces)) })
+        let names = h.keys.sorted()
+        let signed = names.joined(separator: ";")
+        let canonical = [method, path, query, names.map { "\($0):\(h[$0]!)\n" }.joined(), signed, sha256(body)].joined(separator: "\n")
+        let day = String(date.prefix(8))
+        let scope = "\(day)/\(region)/\(service)/aws4_request"
+        let toSign = ["AWS4-HMAC-SHA256", date, scope, sha256(Data(canonical.utf8))].joined(separator: "\n")
+        var k = hmac(Data("AWS4\(key.secret)".utf8), day)
+        k = hmac(k, region); k = hmac(k, service); k = hmac(k, "aws4_request")
+        let signature = hex(hmac(k, toSign))
+        return "AWS4-HMAC-SHA256 Credential=\(key.keyID)/\(scope), SignedHeaders=\(signed), Signature=\(signature)"
+    }
+
+    static func amzDate(_ d: Date = Date()) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        return f.string(from: d)
+    }
+}
+
+enum LightsailError: LocalizedError {
+    case notAllowed(String), api(String)
+    var errorDescription: String? {
+        switch self {
+        case .notAllowed(let action): return "This AWS key isn't allowed to \(action). Add lightsail:\(action == "stop" ? "StopInstance" : action == "start" ? "StartInstance" : "GetInstance") to its policy (VPN Sync on the Mac: Settings → Lightsail)."
+        case .api(let m): return "Lightsail: \(m)"
+        }
+    }
+}
+
+struct LightsailInstance: Equatable {
+    var state: String          // running, stopped, stopping, pending
+    var ip: String?
+    var staticIP: Bool
+    var isRunning: Bool { state == "running" }
+    var isDown: Bool { state == "stopped" || state == "stopping" }
+    var label: String {
+        switch state {
+        case "stopping": return "stopping…"
+        case "pending": return "starting…"
+        default: return state
+        }
+    }
+}
+
+enum Lightsail {
+    private static func call(_ action: String, instance: String, region: String, key: AWSKey) async throws -> [String: Any] {
+        let host = "lightsail.\(region).amazonaws.com"
+        let body = try JSONSerialization.data(withJSONObject: ["instanceName": instance])
+        let date = SigV4.amzDate()
+        let headers = ["content-type": "application/x-amz-json-1.1", "host": host, "x-amz-date": date,
+                       "x-amz-target": "Lightsail_20161128.\(action)"]
+        var req = URLRequest(url: URL(string: "https://\(host)/")!)
+        req.httpMethod = "POST"; req.httpBody = body; req.timeoutInterval = 20
+        for (k, v) in headers where k != "host" { req.setValue(v, forHTTPHeaderField: k) }
+        req.setValue(SigV4.authorization(method: "POST", path: "/", query: "", headers: headers, body: body,
+                                         region: region, service: "lightsail", date: date, key: key),
+                     forHTTPHeaderField: "Authorization")
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        if let code = (resp as? HTTPURLResponse)?.statusCode, code >= 300 {
+            let msg = (json["message"] ?? json["Message"]) as? String ?? "HTTP \(code)"
+            if msg.contains("not authorized") || (json["__type"] as? String ?? "").contains("AccessDenied") {
+                throw LightsailError.notAllowed(action == "StopInstance" ? "stop" : action == "StartInstance" ? "start" : "read")
+            }
+            throw LightsailError.api(msg)
+        }
+        return json
+    }
+
+    static func instance(_ name: String, region: String, key: AWSKey) async throws -> LightsailInstance {
+        let j = try await call("GetInstance", instance: name, region: region, key: key)
+        let i = j["instance"] as? [String: Any] ?? [:]
+        let state = (i["state"] as? [String: Any])?["name"] as? String ?? "unknown"
+        return LightsailInstance(state: state, ip: i["publicIpAddress"] as? String, staticIP: i["isStaticIp"] as? Bool ?? false)
+    }
+
+    static func stop(_ name: String, region: String, key: AWSKey) async throws {
+        _ = try await call("StopInstance", instance: name, region: region, key: key)
+    }
+
+    static func start(_ name: String, region: String, key: AWSKey) async throws {
+        _ = try await call("StartInstance", instance: name, region: region, key: key)
+    }
+}

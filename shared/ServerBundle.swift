@@ -20,6 +20,8 @@ struct ExportedServer: Codable, Hashable {
     var lastIP: String?
     var hostKey: String        // "ssh-ed25519 AAAA…"
     var key: String            // OpenSSH private key (PEM text)
+    var region: String? = nil  // Lightsail region and instance name, for Start/Stop Server
+    var instance: String? = nil
 }
 
 enum ServerBundleError: LocalizedError {
@@ -34,16 +36,21 @@ enum ServerBundleError: LocalizedError {
 }
 
 enum ServerBundle {
-    struct Payload: Codable { var exported: Date; var servers: [ExportedServer] }
+    struct Payload: Codable {
+        var exported: Date
+        var servers: [ExportedServer]
+        /// The Lightsail key, only when the export included it (Start/Stop Server on the iPhone).
+        var aws: AWSKey? = nil
+    }
     private struct Envelope: Codable { var format: String; var version: Int; var kdf: String; var rounds: Int; var salt: String; var box: String }
 
     static let rounds = 600_000
 
-    static func seal(_ servers: [ExportedServer], passphrase: String) throws -> Data {
+    static func seal(_ servers: [ExportedServer], aws: AWSKey? = nil, passphrase: String) throws -> Data {
         var salt = Data(count: 16)
         _ = salt.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!) }
         let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601
-        let plain = try enc.encode(Payload(exported: Date(), servers: servers))
+        let plain = try enc.encode(Payload(exported: Date(), servers: servers, aws: aws))
         let box = try AES.GCM.seal(plain, using: key(passphrase, salt: salt, rounds: rounds))
         let env = Envelope(format: "vpnsync-servers", version: 1, kdf: "pbkdf2-sha256", rounds: rounds,
                            salt: salt.base64EncodedString(), box: box.combined!.base64EncodedString())

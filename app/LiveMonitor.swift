@@ -503,6 +503,7 @@ extension Model {
 
     /// Runs a confirmed service action.
     func runService(_ a: ServiceAction) async {
+        if a.vpn == "instance" { await powerServer(a.server, start: a.action == "start"); return }
         let args = a.action == "reboot" ? ["reboot", a.server] : ["service", a.server, a.vpn, a.action]
         let label = a.action == "reboot" ? "Rebooting \(a.server)…"
             : "\(a.action == "stop" ? "Stopping" : a.action == "start" ? "Starting" : "Restarting") \(a.vpnLabel)…"
@@ -639,15 +640,25 @@ struct ServicesBar: View {
                 Button("Start \(all)") { Task { await m.runService(ServiceAction(server: m.server, vpn: "all", action: "start")) } }
                 Divider()
                 Button("Reboot Server…") { m.confirmService = ServiceAction(server: m.server, vpn: "reboot", action: "reboot") }
+                if m.isLightsail(m.server) {
+                    let st = m.instanceStates[m.server]
+                    Divider()
+                    Button("Stop Server…") { m.confirmService = ServiceAction(server: m.server, vpn: "instance", action: "stop") }
+                        .disabled(st?.isDown == true || st?.state == "pending")
+                    Button("Start Server") { Task { await m.powerServer(m.server, start: true) } }
+                        .disabled(st?.isRunning == true || st?.state == "pending" || st?.state == "stopping")
+                }
             } label: {
                 Label("Power", lucide: "power").font(.system(.callout, design: .rounded).weight(.medium))
             }
             .fullLabelMenu()
             .padding(.horizontal, 12).padding(.vertical, 7)
             .glassCapsule()
-            .help("Start, stop or restart the VPNs, or reboot the server")
+            .help(m.isLightsail(m.server) ? "Start, stop or restart the VPNs; reboot, stop or start the server"
+                                          : "Start, stop or restart the VPNs, or reboot the server")
         }
         .disabled(m.busy || m.server.isEmpty)
+        .task(id: m.server) { await m.refreshInstanceState(m.server) }
     }
 
     private var hasIPsec: Bool { (m.services["ipsec"]?.state).map { $0 != "missing" } ?? false }

@@ -119,6 +119,8 @@ final class Model: ObservableObject {
     /// One live watcher per server, so notifications cover every server, not just the selected one.
     var watchers: [String: ServerWatcher] = [:]
     @Published var confirmService: ServiceAction?
+    /// Lightsail instance state per server (running, stopped…), when a key is saved.
+    @Published var instanceStates: [String: InstanceState] = [:]
     /// Latest usage report per server (Usage.swift).
     @Published var usageByServer: [String: UsageState] = [:]
     /// Banners for usage limits (warning level and 100%), separate from connect/disconnect banners.
@@ -449,6 +451,9 @@ final class Model: ObservableObject {
             }
             if s == server { await reloadAsync(); serverIP = lastIP; status = .upToDate }
             restartWatcher(s)
+        } else if let st = await refreshInstanceState(s), st.isDown {
+            // stopped on purpose (here or in the Lightsail console): no "unreachable" alarm
+            unreachableNotified.insert(s)
         } else if !unreachableNotified.contains(s) {
             unreachableNotified.insert(s)
             let (_, st) = await runCLI(["aws", "status"], quiet: true)
@@ -906,7 +911,7 @@ struct ContentView: View {
         .alert(serviceTitle, isPresented: Binding(
             get: { m.confirmService != nil },
             set: { if !$0 { m.confirmService = nil } }), presenting: m.confirmService) { a in
-            Button(a.action == "reboot" ? "Reboot" : a.action == "stop" ? "Stop" : "Restart", role: .destructive) {
+            Button(a.vpn == "instance" ? "Stop Server" : a.action == "reboot" ? "Reboot" : a.action == "stop" ? "Stop" : "Restart", role: .destructive) {
                 Task { await m.runService(a) }
             }
             Button("Cancel", role: .cancel) {}
@@ -962,11 +967,19 @@ struct ContentView: View {
     private var serviceTitle: String {
         guard let a = m.confirmService else { return "" }
         if a.action == "reboot" { return "Reboot \(a.server)?" }
+        if a.vpn == "instance" { return "Stop the server \(a.server)?" }
         return "\(a.action == "stop" ? "Stop" : "Restart") \(a.vpnLabel) on \(a.server)?"
     }
 
     private func serviceMessage(_ a: ServiceAction) -> String {
         let mac = "If this Mac is connected through it, it loses internet until the VPN is back (or you disconnect the VPN app)."
+        if a.vpn == "instance" {
+            let st = m.instanceStates[a.server]
+            let ip = st?.staticIP == true
+                ? "Its static IP stays the same."
+                : "Without a static IP it gets a new address when it starts: VPN Sync finds it and updates the profiles, but phones and TVs need their WireGuard and IKEv2 profiles again. A Lightsail static IP avoids this."
+            return "The Lightsail instance is shut down: every device is disconnected, and nothing reconnects until you start it again (Power → Start Server). \(ip) \(mac)"
+        }
         switch a.action {
         case "reboot":
             return "Every device on \(a.server) is disconnected for about a minute while it restarts. The IP address stays the same. \(mac)"
@@ -1070,6 +1083,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var hints: some View {
+        StoppedBanner(server: m.server)
         switch m.status {
         case .unreachable:
             VStack(alignment: .leading, spacing: 8) {

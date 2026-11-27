@@ -42,6 +42,11 @@
 #   vpn-sync aws set                      save a read-only AWS key in the Keychain
 #                                         (asks, or reads "ID<newline>SECRET" from stdin)
 #   vpn-sync aws status | remove | ip <server>
+#   vpn-sync aws state <server>           running, stopped, stopping or pending (and the IP)
+#   vpn-sync aws stop <server>            stop the Lightsail instance (every device disconnects)
+#   vpn-sync aws start <server>           start it again; add --wait to wait until it's running
+#       stop/start need a key allowed lightsail:StopInstance and lightsail:StartInstance; a
+#       server without a static IP comes back with a new IP (VPN Sync finds it and resyncs)
 #
 # Servers:
 #   vpn-sync server list
@@ -195,6 +200,41 @@ lightsail_ip() {
 	return 1
 }
 
+# lightsail_call REGION ACTION JSON -> the API's JSON answer (non-zero exit and the reason on
+# stderr on failure). ACTION is GetInstance, StopInstance or StartInstance. Uses the Keychain key,
+# else the AWS CLI if it's configured.
+lightsail_call() {
+	local region="$1" action="$2" body="$3" id secret out msg
+	id=$(aws_key_id); secret=$(aws_secret)
+	if [ -z "$id" ] || [ -z "$secret" ]; then
+		if command -v aws >/dev/null 2>&1 && aws configure get aws_access_key_id >/dev/null 2>&1; then
+			local inst; inst=$(printf '%s' "$body" | plutil -extract instanceName raw -o - - 2>/dev/null)
+			case "$action" in
+				GetInstance) aws lightsail get-instance --region "$region" --instance-name "$inst" --output json ;;
+				StopInstance) aws lightsail stop-instance --region "$region" --instance-name "$inst" --output json ;;
+				StartInstance) aws lightsail start-instance --region "$region" --instance-name "$inst" --output json ;;
+			esac
+			return
+		fi
+		echo "no Lightsail key saved (vpn-sync aws set)" >&2; return 1
+	fi
+	out=$(printf 'user = "%s:%s"\n' "$id" "$secret" | curl -sS -m 20 -K - \
+		--aws-sigv4 "aws:amz:$region:lightsail" \
+		-H "X-Amz-Target: Lightsail_20161128.$action" -H "Content-Type: application/x-amz-json-1.1" \
+		--data "$body" "https://lightsail.$region.amazonaws.com/" 2>&1) || { echo "lightsail: $out" >&2; return 1; }
+	msg=$(printf '%s' "$out" | plutil -extract message raw -o - - 2>/dev/null || printf '%s' "$out" | plutil -extract Message raw -o - - 2>/dev/null || true)
+	if [ -n "$msg" ] && ! printf '%s' "$out" | plutil -extract operations raw -o - - >/dev/null 2>&1 \
+		&& ! printf '%s' "$out" | plutil -extract instance raw -o - - >/dev/null 2>&1; then
+		case "$msg" in
+			*"not authorized"*|*AccessDenied*)
+				echo "lightsail: this key isn't allowed to ${action%Instance} instances. Add lightsail:$action to its IAM policy (Settings → Lightsail shows the policy)." >&2 ;;
+			*) echo "lightsail: $msg" >&2 ;;
+		esac
+		return 1
+	fi
+	printf '%s' "$out"
+}
+
 aws_cmd() {
 	case "${1:-}" in
 		set)
@@ -229,7 +269,33 @@ aws_cmd() {
 			local ip; ip=$(lightsail_ip "$S_REGION" "$S_INSTANCE") || die "lookup failed"
 			echo "IP=$ip"
 			;;
-		*) die "usage: vpn-sync aws set | status | remove | ip <server>" ;;
+		state|stop|start)
+			local cmd="$1" name="${2:-}" wait=0 out state ip
+			[ -n "$name" ] || die "usage: vpn-sync aws $cmd <server>"
+			[ "${3:-}" = --wait ] && wait=1
+			load_server "$name"
+			[ -n "$S_REGION" ] || die "$name isn't a Lightsail server (no region set: vpn-sync server edit $name --region …)"
+			local body; body=$(printf '{"instanceName":"%s"}' "$S_INSTANCE")
+			case "$cmd" in
+				stop) lightsail_call "$S_REGION" StopInstance "$body" >/dev/null || die "stop failed"
+					info "stopping $name (Lightsail instance $S_INSTANCE)"; echo "REQUESTED=stop" ;;
+				start) lightsail_call "$S_REGION" StartInstance "$body" >/dev/null || die "start failed"
+					info "starting $name (Lightsail instance $S_INSTANCE)"; echo "REQUESTED=start" ;;
+			esac
+			local tries=0
+			while :; do
+				out=$(lightsail_call "$S_REGION" GetInstance "$body") || die "couldn't read the instance's state"
+				state=$(printf '%s' "$out" | plutil -extract instance.state.name raw -o - - 2>/dev/null || echo unknown)
+				ip=$(printf '%s' "$out" | plutil -extract instance.publicIpAddress raw -o - - 2>/dev/null || true)
+				[ $wait -eq 1 ] && [ "$cmd" = start ] && [ "$state" != running ] && [ $tries -lt 40 ] || break
+				tries=$((tries + 1)); sleep 5
+			done
+			echo "STATE=$state"
+			[[ "$ip" =~ $IPV4_RE ]] && echo "IP=$ip"
+			if printf '%s' "$out" | plutil -extract instance.isStaticIp raw -o - - 2>/dev/null | grep -q true; then echo "STATIC_IP=yes"; else echo "STATIC_IP=no"; fi
+			return 0
+			;;
+		*) die "usage: vpn-sync aws set | status | remove | ip | state | stop | start <server>" ;;
 	esac
 }
 

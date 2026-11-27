@@ -72,6 +72,7 @@ struct Backdrop: View {
 }
 
 struct ServerCard: View {
+    @EnvironmentObject var store: Store
     let server: ServerConfig
     @ObservedObject var live: ServerLive
 
@@ -109,6 +110,7 @@ struct ServerCard: View {
     }
 
     private var linkText: String {
+        if let st = store.instances[server.name], !st.isRunning { return "Server \(st.label)" }
         switch live.link {
         case .off: return server.address
         case .connecting: return "Connecting to \(server.address)…"

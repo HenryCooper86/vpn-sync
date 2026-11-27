@@ -14,6 +14,8 @@ struct ServerConfig: Codable, Identifiable, Hashable {
     var privateIP: String?
     var lastIP: String?
     var hostKey: String
+    var region: String? = nil      // Lightsail, for Start/Stop Server
+    var instance: String? = nil
     var id: String { name }
     /// Shown under the name: the address the phone connects to.
     var address: String { lastIP ?? host }
@@ -44,6 +46,8 @@ final class Store: ObservableObject {
     @Published var pendingImport: Data?
     /// A one-line message at the bottom of the screen ("tv is paused.").
     @Published var toast: String?
+    /// Lightsail instance state per server (when the export included a Lightsail key).
+    @Published var instances: [String: LightsailInstance] = [:]
 
     private var connections: [String: SSHConnection] = [:]
     private var connecting: [String: Task<SSHConnection, Error>] = [:]
@@ -96,10 +100,12 @@ final class Store: ObservableObject {
             _ = try OpenSSHKey.ed25519(fromPEM: e.key)          // refuse keys the phone can't use
             try Keychain.setKey(e.key, for: e.name)
             let cfg = ServerConfig(name: e.name, host: e.host, user: e.user, port: e.port, jump: e.jump,
-                                   privateIP: e.privateIP, lastIP: e.lastIP, hostKey: e.hostKey)
+                                   privateIP: e.privateIP, lastIP: e.lastIP, hostKey: e.hostKey,
+                                   region: e.region, instance: e.instance)
             disconnect(e.name)
             if let i = servers.firstIndex(where: { $0.name == e.name }) { servers[i] = cfg } else { servers.append(cfg) }
         }
+        if let k = payload.aws { try Keychain.setAWS(k) }
         servers.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         save()
         for s in servers where live[s.name] == nil { live[s.name] = ServerLive(name: s.name, store: self) }
@@ -178,6 +184,54 @@ final class Store: ObservableObject {
         return CommandResult(code: 0, stdout: Data(lines.joined(separator: "\n").utf8), stderr: "")
     }
 
+    // MARK: Lightsail (stop and start)
+
+    var awsKey: AWSKey? { demo ? nil : Keychain.aws() }
+    func canPower(_ name: String) -> Bool { server(name)?.region != nil && awsKey != nil }
+
+    /// Asks Lightsail for the instance's state; a new public IP (after a stop and start without a
+    /// static IP) becomes the address the phone connects to.
+    @discardableResult
+    func refreshInstance(_ name: String) async -> LightsailInstance? {
+        guard let s = server(name), let region = s.region, let key = awsKey else { return nil }
+        guard let i = try? await Lightsail.instance(s.instance ?? name, region: region, key: key) else { return nil }
+        instances[name] = i
+        if i.isRunning, let ip = i.ip, ip != s.lastIP, let idx = servers.firstIndex(where: { $0.name == name }) {
+            servers[idx].lastIP = ip
+            save()
+            disconnect(name)
+        }
+        return i
+    }
+
+    /// Stops or starts the server's Lightsail instance; starting waits until it's running, then
+    /// reconnects the live view.
+    func power(_ name: String, start: Bool) async throws {
+        guard let s = server(name), let region = s.region, let key = awsKey else { return }
+        let inst = s.instance ?? name
+        if start {
+            try await Lightsail.start(inst, region: region, key: key)
+            instances[name] = LightsailInstance(state: "pending", ip: nil, staticIP: instances[name]?.staticIP ?? false)
+            for _ in 0..<40 {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                if let i = await refreshInstance(name), i.isRunning { break }
+            }
+            try? await Task.sleep(nanoseconds: 20_000_000_000)    // the VPNs and SSH need a moment
+            live[name]?.restart()
+        } else {
+            try await Lightsail.stop(inst, region: region, key: key)
+            instances[name] = LightsailInstance(state: "stopping", ip: nil, staticIP: instances[name]?.staticIP ?? false)
+            live[name]?.stop()
+            disconnect(name)
+            Task {
+                for _ in 0..<24 {
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    if let i = await self.refreshInstance(name), i.state == "stopped" { break }
+                }
+            }
+        }
+    }
+
     func sudo(_ name: String) -> String { server(name)?.user == "root" ? "" : "sudo -n " }
 
     /// Runs a tool and turns a non-zero exit into an error with its last lines.
@@ -248,6 +302,27 @@ enum Keychain {
         var out: CFTypeRef?
         guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data else { return nil }
         return String(data: d, encoding: .utf8)
+    }
+
+    private static let awsService = "local.vpnsync.phone.aws"
+
+    static func setAWS(_ k: AWSKey) throws {
+        let base: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: awsService,
+                                   kSecAttrAccount as String: "lightsail"]
+        SecItemDelete(base as CFDictionary)
+        var q = base
+        q[kSecValueData as String] = try JSONEncoder().encode(k)
+        q[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        let st = SecItemAdd(q as CFDictionary, nil)
+        guard st == errSecSuccess else { throw StoreError.failed("Couldn't save the Lightsail key (\(st)).") }
+    }
+
+    static func aws() -> AWSKey? {
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: awsService,
+                                kSecAttrAccount as String: "lightsail", kSecReturnData as String: true]
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data else { return nil }
+        return try? JSONDecoder().decode(AWSKey.self, from: d)
     }
 
     static func deleteKey(for server: String) {
