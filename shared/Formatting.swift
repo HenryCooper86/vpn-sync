@@ -26,3 +26,20 @@ func formatRate(_ bytesPerSec: Double) -> String {
 extension Array {
     subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
 }
+
+/// Between items of a list of names shown to the user ("tv, laptop"): ", " in English, "、" in Chinese.
+var listSep: String { String(localized: "list-separator", defaultValue: ", ", comment: "between items of a list of names, e.g. 'tv, laptop'") }
+/// Between clauses of a summary ("1 paused, 2 near a limit"): ", " in English, "，" in Chinese.
+var clauseSep: String { String(localized: "clause-separator", defaultValue: ", ", comment: "between clauses, e.g. '1 paused, 2 near a limit'") }
+
+/// The platform an OpenVPN client reports (IV_PLAT), as people know it.
+func clientPlatformName(_ p: String) -> String {
+    switch p.lowercased() {
+    case "win": return "Windows"
+    case "mac": return "macOS"
+    case "ios": return "iOS"
+    case "android": return "Android"
+    case "linux": return "Linux"
+    default: return p
+    }
+}

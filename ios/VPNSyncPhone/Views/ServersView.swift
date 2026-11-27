@@ -37,23 +37,32 @@ struct ServersView: View {
         }
     }
 
+    private func devicesPhrase(_ n: Int) -> String {
+        n == 1 ? String(localized: "1 device") : String(localized: "\(n) devices")
+    }
+    private func serversPhrase(_ n: Int) -> String {
+        n == 1 ? String(localized: "1 server") : String(localized: "\(n) servers")
+    }
+
     private var summary: some View {
         let n = store.onlineEverywhere, a = store.limitAttention
         return VStack(alignment: .leading, spacing: 4) {
-            Text("\(n) device\(n == 1 ? "" : "s") online on \(store.servers.count) server\(store.servers.count == 1 ? "" : "s")")
+            Text(String(localized: "\(devicesPhrase(n)) online on \(serversPhrase(store.servers.count))"))
                 .font(.subheadline).foregroundStyle(.secondary)
             if a.paused + a.near > 0 {
-                Label([a.paused > 0 ? "\(a.paused) paused" : nil, a.near > 0 ? "\(a.near) at \(store.warnAt)% or more" : nil]
-                        .compactMap { $0 }.joined(separator: ", "), systemImage: a.paused > 0 ? "pause.circle.fill" : "gauge.with.dots.needle.67percent")
+                Label([a.paused > 0 ? String(localized: "\(a.paused) paused") : nil, a.near > 0 ? String(localized: "\(a.near) at \(store.warnAt)% or more") : nil]
+                        .compactMap { $0 }.joined(separator: clauseSep), systemImage: a.paused > 0 ? "pause.circle.fill" : "gauge.with.dots.needle.67percent")
                     .font(.subheadline.weight(.medium)).foregroundStyle(.orange)
             }
         }
         .padding(.horizontal, 4)
     }
 
-    /// Test hook (DEBUG): -screen ServerName opens that server at launch, for screenshots.
+    /// Test hook (DEBUG): -screen ServerName opens that server at launch, -screen settings opens
+    /// Settings, for screenshots.
     private func openRequestedScreen() {
         #if DEBUG
+        if UserDefaults.standard.string(forKey: "screen") == "settings" { settings = true }
         if let s = UserDefaults.standard.string(forKey: "screen"), store.server(s) != nil, path.isEmpty { path.append(s) }
         #endif
     }
@@ -86,7 +95,7 @@ struct ServerCard: View {
                 Spacer()
                 VStack(alignment: .trailing, spacing: 0) {
                     Text("\(live.onlineNames.count)").font(.system(size: 30, weight: .semibold, design: .rounded)).monospacedDigit()
-                    Text("online").font(.caption).foregroundStyle(.secondary)
+                    Text("online", comment: "Under a number of devices that are connected right now").font(.caption).foregroundStyle(.secondary)
                 }
             }
             ServicesStrip(live: live)
@@ -96,12 +105,12 @@ struct ServerCard: View {
             }
             let names = live.onlineNames.sorted()
             if !names.isEmpty {
-                Text(names.prefix(4).joined(separator: ", ") + (names.count > 4 ? " and \(names.count - 4) more" : ""))
+                Text(names.prefix(4).joined(separator: listSep) + (names.count > 4 ? String(localized: " and \(names.count - 4) more") : ""))
                     .font(.footnote).foregroundStyle(.secondary).lineLimit(1)
             }
             let a = live.limitAttention
             if a.paused + a.near > 0 {
-                Text([a.paused > 0 ? "\(a.paused) paused" : nil, a.near > 0 ? "\(a.near) near a limit" : nil].compactMap { $0 }.joined(separator: ", "))
+                Text([a.paused > 0 ? String(localized: "\(a.paused) paused") : nil, a.near > 0 ? String(localized: "\(a.near) near a limit") : nil].compactMap { $0 }.joined(separator: clauseSep))
                     .font(.footnote.weight(.medium)).foregroundStyle(.orange)
             }
         }
@@ -110,11 +119,11 @@ struct ServerCard: View {
     }
 
     private var linkText: String {
-        if let st = store.instances[server.name], !st.isRunning { return "Server \(st.label)" }
+        if let st = store.instances[server.name], !st.isRunning { return String(localized: "Server \(st.label)") }
         switch live.link {
         case .off: return server.address
-        case .connecting: return "Connecting to \(server.address)…"
-        case .live: return "Live, \(server.address)"
+        case .connecting: return String(localized: "Connecting to \(server.address)…")
+        case .live: return String(localized: "Live, \(server.address)")
         case .retrying(let why): return why
         }
     }

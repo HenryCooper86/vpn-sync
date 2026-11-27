@@ -125,6 +125,10 @@ the Lightsail firewall (the policy it shows allows only reading, stopping and st
 and opening or closing their ports). To use them on the iPhone, tick **Include the Lightsail key**
 when exporting.
 
+Both apps are in English and Simplified Chinese, following your system language. To choose one
+for VPN Sync only: on the Mac, **Settings → Appearance → Language**; on the iPhone, **Settings →
+Language** in the app, which opens its page in the iOS Settings app.
+
 ## Command line
 
 ```

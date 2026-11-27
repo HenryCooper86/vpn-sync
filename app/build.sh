@@ -9,6 +9,12 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build/AppIcon.iconset
 swiftc -swift-version 5 -O -parse-as-library -target arm64-apple-macos14.0 \
 	-o "$APP/Contents/MacOS/VPNSync" VPNSync.swift ServerViews.swift LiveMonitor.swift MenuBar.swift SettingsView.swift Theme.swift Icons.swift Stats.swift TrafficView.swift DeviceKind.swift Geo.swift Usage.swift Lightsail.swift PortsSheet.swift ../shared/*.swift
 cp Info.plist "$APP/Contents/Info.plist"
+# translations: one catalog for both apps (shared/Localizable.xcstrings) -> zh-Hans.lproj etc.
+if xcrun --find xcstringstool >/dev/null 2>&1; then
+	xcrun xcstringstool compile ../shared/Localizable.xcstrings --output-directory "$APP/Contents/Resources"
+else
+	echo "warning: xcstringstool not found (it comes with Xcode); building without translations"
+fi
 mkdir -p "$APP/Contents/Resources/lucide"
 cp lucide/*.svg "$APP/Contents/Resources/lucide/"
 

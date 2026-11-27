@@ -12,15 +12,15 @@ enum DeviceKind: String, CaseIterable, Identifiable {
         case .mac: return "Mac"
         case .iphone: return "iPhone"
         case .ipad: return "iPad"
-        case .androidPhone: return "Android phone"
-        case .androidTV: return "Android TV"
+        case .androidPhone: return String(localized: "Android phone")
+        case .androidTV: return String(localized: "Android TV")
         case .appleTV: return "Apple TV"
-        case .windows: return "Windows PC"
+        case .windows: return String(localized: "Windows PC")
         case .linux: return "Linux"
-        case .phone: return "Phone"
-        case .tv: return "TV"
-        case .laptop: return "Laptop"
-        case .unknown: return "Unknown device"
+        case .phone: return String(localized: "Phone")
+        case .tv: return String(localized: "TV")
+        case .laptop: return String(localized: "Laptop")
+        case .unknown: return String(localized: "Unknown device")
         }
     }
 

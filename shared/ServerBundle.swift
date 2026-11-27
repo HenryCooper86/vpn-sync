@@ -28,9 +28,9 @@ enum ServerBundleError: LocalizedError {
     case notABundle, wrongPassphrase, newerVersion
     var errorDescription: String? {
         switch self {
-        case .notABundle: return "This isn't a VPN Sync servers file."
-        case .wrongPassphrase: return "That passphrase doesn't open this file."
-        case .newerVersion: return "This file is from a newer VPN Sync; update the app."
+        case .notABundle: String(localized: "This isn't a VPN Sync servers file.")
+        case .wrongPassphrase: String(localized: "That passphrase doesn't open this file.")
+        case .newerVersion: String(localized: "This file is from a newer VPN Sync; update the app.")
         }
     }
 }

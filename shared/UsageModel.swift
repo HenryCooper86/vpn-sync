@@ -19,10 +19,11 @@ struct UsageLimit: Equatable {
 
     /// "1.5 GB a day and 20 GB a month, pauses at 100%"
     var summary: String {
-        var parts: [String] = []
-        if daily > 0 { parts.append("\(formatBytes(daily)) a day") }
-        if monthly > 0 { parts.append("\(formatBytes(monthly)) a month") }
-        return parts.joined(separator: " and ") + (pauses ? ", pauses at 100%" : ", alerts only")
+        let tail = pauses ? String(localized: "pauses at 100%") : String(localized: "alerts only")
+        if daily > 0, monthly > 0 { return String(localized: "\(formatBytes(daily)) a day and \(formatBytes(monthly)) a month, \(tail)") }
+        if daily > 0 { return String(localized: "\(formatBytes(daily)) a day, \(tail)") }
+        if monthly > 0 { return String(localized: "\(formatBytes(monthly)) a month, \(tail)") }
+        return tail
     }
 
     /// The limit closest to being reached: fraction used and "86% of 1.5 GB a day".
@@ -30,11 +31,11 @@ struct UsageLimit: Equatable {
         var best: (fraction: Double, text: String)?
         if daily > 0 {
             let f = Double(u.today) / Double(daily)
-            best = (f, "\(Int(min(f, 9.99) * 100))% of \(formatBytes(daily)) a day")
+            best = (f, String(localized: "\(Int(min(f, 9.99) * 100))% of \(formatBytes(daily)) a day"))
         }
         if monthly > 0 {
             let f = Double(u.month) / Double(monthly)
-            if best == nil || f > best!.fraction { best = (f, "\(Int(min(f, 9.99) * 100))% of \(formatBytes(monthly)) a month") }
+            if best == nil || f > best!.fraction { best = (f, String(localized: "\(Int(min(f, 9.99) * 100))% of \(formatBytes(monthly)) a month")) }
         }
         return best
     }
@@ -44,9 +45,9 @@ struct PauseInfo: Equatable {
     var since: String             // yyyy-mm-dd
     var label: String {
         switch reason {
-        case "daily": return "Paused: daily limit reached. Back at midnight."
-        case "monthly": return "Paused: monthly limit reached. Back on the 1st."
-        default: return "Paused by you"
+        case "daily": String(localized: "Paused: daily limit reached. Back at midnight.")
+        case "monthly": String(localized: "Paused: monthly limit reached. Back on the 1st.")
+        default: String(localized: "Paused by you")
         }
     }
 }
@@ -74,37 +75,42 @@ struct UsageEvent: Identifiable, Equatable {
             let ol = old.limits[n], nl = new.limits[n], op = old.paused[n], np = new.paused[n]
             let ou = old.usage[n] ?? DeviceUsage(), nu = new.usage[n] ?? DeviceUsage()
             if ol != nl {
-                if let nl { add(n, .limitSet, ol == nil ? "got a usage limit" : "has a new usage limit", nl.summary) }
-                else { add(n, .limitRemoved, "has no usage limit now") }
+                if let nl { add(n, .limitSet, ol == nil ? String(localized: "got a usage limit") : String(localized: "has a new usage limit"), nl.summary) }
+                else { add(n, .limitRemoved, String(localized: "has no usage limit now")) }
             } else if let nl {
                 // crossings of an unchanged limit; a pausing limit's 100% shows as the pause below
                 for (what, cap, was, now, same) in [("daily", nl.daily, ou.today, nu.today, sameDay),
                                                     ("monthly", nl.monthly, ou.month, nu.month, sameMonth)] where cap > 0 {
+                    let isDaily = what == "daily"
                     let a = same ? Double(was) / Double(cap) : 0, b = Double(now) / Double(cap)
-                    let detail = "\(formatBytes(now)) of \(formatBytes(cap)) \(what == "daily" ? "today" : "this month")"
+                    let detail = isDaily ? String(localized: "\(formatBytes(now)) of \(formatBytes(cap)) today")
+                                         : String(localized: "\(formatBytes(now)) of \(formatBytes(cap)) this month")
+                    let tailPause = nl.pauses ? String(localized: ", pauses at 100%") : ""
                     if a < 1, b >= 1 {
-                        if !nl.pauses { add(n, .reached, "reached its \(what) limit", detail + ", alerts only") }
+                        if !nl.pauses { add(n, .reached, isDaily ? String(localized: "reached its daily limit") : String(localized: "reached its monthly limit"), detail + String(localized: ", alerts only")) }
                     } else if let w = usageWarnFraction, a < w, b >= w {
-                        add(n, .nearing, "used \(Int(b * 100))% of its \(what) limit", detail + (nl.pauses ? ", pauses at 100%" : ""))
+                        add(n, .nearing, isDaily ? String(localized: "used \(Int(b * 100))% of its daily limit") : String(localized: "used \(Int(b * 100))% of its monthly limit"), detail + tailPause)
                     }
                 }
             }
             if op == nil, let np {
                 switch np.reason {
                 case "daily":
-                    add(n, .paused, "was paused at its daily limit",
-                        "\(formatBytes(nu.today)) today, back at midnight")
+                    add(n, .paused, String(localized: "was paused at its daily limit"),
+                        String(localized: "\(formatBytes(nu.today)) today, back at midnight"))
                 case "monthly":
-                    add(n, .paused, "was paused at its monthly limit",
-                        "\(formatBytes(nu.month)) this month, back on the 1st")
+                    add(n, .paused, String(localized: "was paused at its monthly limit"),
+                        String(localized: "\(formatBytes(nu.month)) this month, back on the 1st"))
                 default:
-                    add(n, .paused, "was paused by you", "stays connected, no internet")
+                    add(n, .paused, String(localized: "was paused by you"), String(localized: "stays connected, no internet"))
                 }
             } else if let op, np == nil {
                 let lifted = (op.reason == "daily" && !sameDay) || (op.reason == "monthly" && !sameMonth)
-                add(n, .resumed, lifted ? "has internet again" : "was resumed",
-                    lifted ? (op.reason == "daily" ? "a new day started" : "a new month started")
-                           : op.reason == "manual" ? "" : "won't be paused again \(op.reason == "daily" ? "today" : "this month")")
+                let resumedDetail: String
+                if lifted { resumedDetail = op.reason == "daily" ? String(localized: "a new day started") : String(localized: "a new month started") }
+                else if op.reason == "manual" { resumedDetail = "" }
+                else { resumedDetail = op.reason == "daily" ? String(localized: "won't be paused again today") : String(localized: "won't be paused again this month") }
+                add(n, .resumed, lifted ? String(localized: "has internet again") : String(localized: "was resumed"), resumedDetail)
             }
         }
         return out

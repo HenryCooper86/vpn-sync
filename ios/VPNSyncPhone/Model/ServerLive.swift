@@ -109,14 +109,15 @@ final class ServerLive: ObservableObject, Identifiable {
         let from = ovpn[n].map { addressWithPort($0.realIP, $0.port) }
             ?? ike[n].flatMap { $0.realIP == "-" ? nil : addressWithPort($0.realIP, $0.port) }
             ?? wg[n]?.endpoint.map { addressWithPort($0, wg[n]?.port) }
-        return vpns.joined(separator: " and ") + (from.map { " from \($0)" } ?? "")
+        let names = ListFormatter.localizedString(byJoining: vpns)
+        return from.map { String(localized: "\(names) from \($0)") } ?? names
     }
 
     /// Each VPN a device is connected on now: the server's port and the device's address and port.
     func connections(_ n: String) -> [(vpn: String, server: String?, from: String, vpnIP: String?)] {
         var out: [(String, String?, String, String?)] = []
         func from(_ ip: String?, _ port: Int?) -> String {
-            guard let ip, ip != "-" else { return "unknown address" }
+            guard let ip, ip != "-" else { return String(localized: "unknown address") }
             return addressWithPort(ip, port)
         }
         if let o = ovpn[n] { out.append(("OpenVPN", ports.text("openvpn"), from(o.realIP, o.port), o.vpnIP.isEmpty ? nil : o.vpnIP)) }
@@ -174,14 +175,14 @@ final class ServerLive: ObservableObject, Identifiable {
                     }
                 }
                 if Task.isCancelled { return }
-                link = .retrying("The live view stopped.")
+                link = .retrying(String(localized: "The live view stopped."))
             } catch {
                 if Task.isCancelled { return }
                 store.disconnect(name)
                 link = .retrying(error.localizedDescription)
                 // stopped in Lightsail, or back with a new IP (taken from Lightsail)?
                 if let i = await store.refreshInstance(name), i.isDown {
-                    link = .retrying("The server is \(i.label).")
+                    link = .retrying(String(localized: "The server is \(i.label)."))
                     delay = 30
                 }
             }

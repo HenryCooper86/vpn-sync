@@ -36,17 +36,17 @@ struct ChangePortsSheet: View {
 
     /// Why the ports as typed can't be used, or nil.
     private var problem: String? {
-        if hasOVPN && valid(ovpnPort) == nil { return "OpenVPN port must be 1–65535." }
-        if hasWG && valid(wgPort) == nil { return "WireGuard port must be 1–65535." }
+        if hasOVPN && valid(ovpnPort) == nil { return String(localized: "OpenVPN port must be 1–65535.") }
+        if hasWG && valid(wgPort) == nil { return String(localized: "WireGuard port must be 1–65535.") }
         let ssh = Set(ports.filter { $0.vpn == "ssh" }.map(\.port))
         let ike = ports.contains { $0.vpn == "ipsec" }
         if hasOVPN, let p = valid(ovpnPort) {
-            if ovpnProto == "tcp" && ssh.contains(p) { return "TCP \(p) is SSH's port." }
-            if ovpnProto == "udp" && ike && (p == 500 || p == 4500) { return "UDP \(p) is used by IKEv2." }
+            if ovpnProto == "tcp" && ssh.contains(p) { return String(localized: "TCP \(String(p)) is SSH's port.") }
+            if ovpnProto == "udp" && ike && (p == 500 || p == 4500) { return String(localized: "UDP \(String(p)) is used by IKEv2.") }
         }
         if hasWG, let p = valid(wgPort) {
-            if ike && (p == 500 || p == 4500) { return "UDP \(p) is used by IKEv2." }
-            if hasOVPN && ovpnProto == "udp" && valid(ovpnPort) == p { return "OpenVPN and WireGuard can't both use UDP \(p)." }
+            if ike && (p == 500 || p == 4500) { return String(localized: "UDP \(String(p)) is used by IKEv2.") }
+            if hasOVPN && ovpnProto == "udp" && valid(ovpnPort) == p { return String(localized: "OpenVPN and WireGuard can't both use UDP \(String(p)).") }
         }
         return nil
     }
@@ -63,12 +63,12 @@ struct ChangePortsSheet: View {
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
 
             if ports.isEmpty {
-                Text(m.monitoring ? "Waiting for \(server) to report its ports…" : "Turn on Live to read \(server)'s ports first.")
+                Text(m.monitoring ? String(localized: "Waiting for \(server) to report its ports…") : String(localized: "Turn on Live to read \(server)'s ports first."))
                     .font(.callout).foregroundStyle(.secondary)
             } else {
                 VStack(alignment: .leading, spacing: 10) {
                     if let c = current("openvpn") {
-                        FormRow(label: "OpenVPN", hint: "Now \(c.proto.uppercased()) \(c.port).") {
+                        FormRow(label: "OpenVPN", hint: "Now \(c.proto.uppercased()) \(String(c.port)).") {
                             HStack {
                                 TextField("Port", text: $ovpnPort).textFieldStyle(.roundedBorder).frame(width: 90)
                                 Picker("", selection: $ovpnProto) {
@@ -79,12 +79,12 @@ struct ChangePortsSheet: View {
                         }
                     }
                     if let c = current("wireguard") {
-                        FormRow(label: "WireGuard", hint: "Now UDP \(c.port). WireGuard always uses UDP.") {
+                        FormRow(label: "WireGuard", hint: "Now UDP \(String(c.port)). WireGuard always uses UDP.") {
                             TextField("Port", text: $wgPort).textFieldStyle(.roundedBorder).frame(width: 90)
                         }
                     }
                     if let ike = ports.text("ipsec") {
-                        FormRow(label: "IKEv2") { Text("\(ike), fixed by the protocol").foregroundStyle(.secondary) }
+                        FormRow(label: "IKEv2") { Text(String(localized: "\(ike), fixed by the protocol")).foregroundStyle(.secondary) }
                     }
                 }
                 .disabled(working)
@@ -94,16 +94,18 @@ struct ChangePortsSheet: View {
                 VStack(alignment: .leading, spacing: 6) {
                     if ovpnChanged || wgChanged {
                         let n = affected.count
-                        Label(n == 0 ? "Devices on this VPN disconnect until they get their new profile."
-                              : "\(n) device\(n == 1 ? "" : "s") (\(affected.prefix(5).joined(separator: ", "))\(n > 5 ? "…" : "")) disconnect until they get their new profile: VPN Sync updates the Desktop folder and OpenVPN Connect; phones and TVs need the new QR code or file.",
+                        let names = affected.prefix(5).joined(separator: listSep) + (n > 5 ? "…" : "")
+                        Label(n == 0 ? String(localized: "Devices on this VPN disconnect until they get their new profile.")
+                              : n == 1 ? String(localized: "1 device (\(names)) disconnects until it gets its new profile: VPN Sync updates the Desktop folder and OpenVPN Connect; phones and TVs need the new QR code or file.")
+                              : String(localized: "\(n) devices (\(names)) disconnect until they get their new profile: VPN Sync updates the Desktop folder and OpenVPN Connect; phones and TVs need the new QR code or file."),
                               lucide: "circle-alert", size: 13)
                     }
                     if (ovpnChanged && current("openvpn")?.port == 443) || (wgChanged && current("wireguard")?.port == 443) {
-                        Label("Port 443 looks like ordinary web traffic, so it's the hardest for a national firewall to block. Moving away from it can make the VPN easier to block.",
+                        Label(String(localized: "Port 443 looks like ordinary web traffic, so it's the hardest for a national firewall to block. Moving away from it can make the VPN easier to block."),
                               lucide: "shield-off", size: 13)
                     }
-                    Label(lightsail ? "VPN Sync opens the new port in the Lightsail firewall first and closes the old one afterwards. The Lightsail key needs the port permissions (Settings → Lightsail shows the policy)."
-                                    : "Allow the new port in your provider's firewall before you change it.",
+                    Label(lightsail ? String(localized: "VPN Sync opens the new port in the Lightsail firewall first and closes the old one afterwards. The Lightsail key needs the port permissions (Settings → Lightsail shows the policy).")
+                                    : String(localized: "Allow the new port in your provider's firewall before you change it."),
                           lucide: "shield", size: 13)
                 }
                 .font(.callout).foregroundStyle(.secondary)
@@ -152,26 +154,26 @@ struct ChangePortsSheet: View {
         Task {
             var log = ""
             for args in steps {
-                let (code, out) = await m.cli(args, label: "Changing \(args[3] == "openvpn" ? "OpenVPN" : "WireGuard")'s port on \(server)…")
+                let (code, out) = await m.cli(args, label: String(localized: "Changing \(args[3] == "openvpn" ? "OpenVPN" : "WireGuard")'s port on \(server)…"))
                 log += out
                 if code != 0 {
                     let why = out.split(separator: "\n").last { $0.hasPrefix("vpn-sync: ") }
                         .map { String($0.dropFirst("vpn-sync: ".count)) } ?? lastLines(out, 1)
                     error = why.contains("lightsail:") || why.contains("Lightsail")
-                        ? "\(why) Settings → Lightsail shows the policy the key needs."
+                        ? String(localized: "\(why) Settings → Lightsail shows the policy the key needs.")
                         : why
                     break
                 }
                 let kv = parseKV(out)
                 if let c = kv["CHANGED"]?.split(separator: " "), c.count == 3 {
-                    done.append("\(c[0] == "openvpn" ? "OpenVPN" : "WireGuard") now uses \(c[1].uppercased()) \(c[2]).")
+                    done.append(String(localized: "\(c[0] == "openvpn" ? "OpenVPN" : "WireGuard") now uses \(c[1].uppercased()) \(c[2])."))
                 }
             }
             m.opLog = log
             working = false
             m.restartWatcher(server)
             if m.server == server { await m.check() }
-            if !done.isEmpty { m.notices = done + ["Give each device its new profile from the Desktop folder or QR code."] }
+            if !done.isEmpty { m.notices = done + [String(localized: "Give each device its new profile from the Desktop folder or QR code.")] }
         }
     }
 }

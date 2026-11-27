@@ -45,8 +45,8 @@ func isValidHost(_ s: String) -> Bool {
 
 func chooseKeyFile() -> String? {
     let panel = NSOpenPanel()
-    panel.title = "Choose the server's private key"
-    panel.message = "Pick the SSH private key for this server (for Lightsail: the default key .pem you downloaded)."
+    panel.title = String(localized: "Choose the server's private key")
+    panel.message = String(localized: "Pick the SSH private key for this server (for Lightsail: the default key .pem you downloaded).")
     panel.canChooseFiles = true
     panel.canChooseDirectories = false
     panel.allowsMultipleSelection = false
@@ -59,7 +59,7 @@ extension Model {
     /// Runs a vpn-sync command for a sheet, waiting for any running operation first.
     func cli(_ args: [String], label: String) async -> (Int32, String) {
         for _ in 0..<240 where busy { try? await Task.sleep(nanoseconds: 250_000_000) }
-        guard !busy else { return (-2, "Another operation is still running.") }
+        guard !busy else { return (-2, String(localized: "Another operation is still running.")) }
         status = .working(label)
         let r = await runCLI(args)
         if case .working = status { status = .idle }
@@ -89,8 +89,8 @@ struct OutputView: View {
 }
 
 struct FormRow<Content: View>: View {
-    let label: String
-    var hint: String? = nil
+    let label: LocalizedStringKey
+    var hint: LocalizedStringKey? = nil
     @ViewBuilder let content: Content
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -119,9 +119,9 @@ struct ServerListSheet: View {
     @FocusState private var nameFocused: Bool
 
     private func renameProblem(_ old: String) -> String? {
-        if newName.isEmpty { return "Enter a name." }
-        if !isValidServerName(newName) { return "Use letters, numbers, - and _ (no spaces), up to 40." }
-        if newName != old && m.servers.contains(newName) { return "“\(newName)” already exists." }
+        if newName.isEmpty { return String(localized: "Enter a name.") }
+        if !isValidServerName(newName) { return String(localized: "Use letters, numbers, - and _ (no spaces), up to 40.") }
+        if newName != old && m.servers.contains(newName) { return String(localized: "“\(newName)” already exists.") }
         return nil
     }
 
@@ -146,13 +146,13 @@ struct ServerListSheet: View {
         renameBusy = true
         let to = newName
         Task {
-            let (code, out) = await m.cli(["server", "rename", old, to], label: "Renaming \(old)…")
+            let (code, out) = await m.cli(["server", "rename", old, to], label: String(localized: "Renaming \(old)…"))
             renameBusy = false
             if code == 0 {
                 renaming = nil; error = nil
                 m.reloadServers(select: m.server == old ? to : nil)
             } else {
-                error = "Not renamed: " + lastLines(out, 1).replacingOccurrences(of: "vpn-sync: ", with: "")
+                error = String(localized: "Not renamed: \(lastLines(out, 1).replacingOccurrences(of: "vpn-sync: ", with: ""))")
             }
         }
     }
@@ -182,7 +182,7 @@ struct ServerListSheet: View {
                                         .disabled(renameBusy || newName == name || renameProblem(name) != nil)
                                     Button("Cancel") { renaming = nil }.disabled(renameBusy)
                                 }
-                                Text(renameProblem(name) ?? "Its Desktop folder is renamed too.")
+                                Text(renameProblem(name) ?? String(localized: "Its Desktop folder is renamed too."))
                                     .font(.caption)
                                     .foregroundStyle(renameProblem(name) == nil ? Color.secondary : Color.red)
                             } else {
@@ -191,10 +191,12 @@ struct ServerListSheet: View {
                                         .lineLimit(1).fixedSize()
                                     serverActivity(name)
                                 }
-                                Text("\(info.user)@\(info.address.isEmpty ? "?" : info.address)\(info.jump.isEmpty ? "" : ", through \(info.jump) at \(info.privateIP)")")
+                                Text(info.jump.isEmpty ? "\(info.user)@\(info.address.isEmpty ? "?" : info.address)"
+                                     : String(localized: "\(info.user)@\(info.address.isEmpty ? "?" : info.address), through \(info.jump) at \(info.privateIP)"))
                                     .font(.caption).foregroundStyle(.secondary)
                                     .lineLimit(1).truncationMode(.middle)
-                                    .help("\(info.user)@\(info.address)\(info.jump.isEmpty ? "" : ", through \(info.jump) at \(info.privateIP)")")
+                                    .help(info.jump.isEmpty ? "\(info.user)@\(info.address)"
+                                           : String(localized: "\(info.user)@\(info.address), through \(info.jump) at \(info.privateIP)"))
                             }
                         }
                         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
@@ -235,7 +237,7 @@ struct ServerListSheet: View {
             get: { removing != nil }, set: { if !$0 { removing = nil } }), presenting: removing) { ref in
             Button("Remove", role: .destructive) {
                 Task {
-                    let (code, out) = await m.cli(["server", "remove", ref.name], label: "Removing server…")
+                    let (code, out) = await m.cli(["server", "remove", ref.name], label: String(localized: "Removing server…"))
                     error = code == 0 ? nil : lastLines(out)
                     m.reloadServers()
                     if !m.server.isEmpty { await m.check() }
@@ -271,11 +273,11 @@ struct AddServerSheet: View {
     @State private var working = false
 
     private var problem: String? {
-        if !name.isEmpty && !isValidServerName(name) { return "Name: use letters, numbers, - and _ (no spaces)." }
-        if m.servers.contains(name) { return "A server named “\(name)” already exists." }
+        if !name.isEmpty && !isValidServerName(name) { return String(localized: "Name: use letters, numbers, - and _ (no spaces).") }
+        if m.servers.contains(name) { return String(localized: "A server named “\(name)” already exists.") }
         if !host.isEmpty && !isValidHost(host) { return "Address: an IP address or hostname." }
         if Int(port).map({ !(1...65535).contains($0) }) ?? true { return "SSH port must be 1–65535." }
-        if useJump && !privateIP.isEmpty && !isIPv4(privateIP) { return "Private IP must be an IPv4 address." }
+        if useJump && !privateIP.isEmpty && !isIPv4(privateIP) { return String(localized: "Private IP must be an IPv4 address.") }
         return nil
     }
     private var ready: Bool {
@@ -285,7 +287,7 @@ struct AddServerSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(step == .setup ? "Set Up \(name)" : "Add Server").font(.system(size: 22, weight: .bold, design: .rounded))
+            Text(step == .setup ? String(localized: "Set Up \(name)") : String(localized: "Add Server")).font(.system(size: 22, weight: .bold, design: .rounded))
             switch step {
             case .details: details
             case .verify: verify
@@ -316,7 +318,7 @@ struct AddServerSheet: View {
             }
             FormRow(label: "Private key", hint: "Lightsail: Account → SSH keys → download the default key for the region (.pem). A copy is kept in ~/.config/vpn-sync/keys.") {
                 HStack {
-                    Text(keyPath.isEmpty ? "No key chosen" : (keyPath as NSString).abbreviatingWithTildeInPath)
+                    Text(keyPath.isEmpty ? String(localized: "No key chosen") : (keyPath as NSString).abbreviatingWithTildeInPath)
                         .lineLimit(1).truncationMode(.middle)
                         .foregroundStyle(keyPath.isEmpty ? .secondary : .primary)
                     Spacer()
@@ -385,10 +387,10 @@ struct AddServerSheet: View {
         defer { working = false }
         var args = ["server", "hostkey", "--port", port]
         if useJump { args += ["--jump", jump, "--private-ip", privateIP] } else { args += ["--host", host] }
-        let (code, out) = await m.cli(args, label: "Contacting \(host)…")
+        let (code, out) = await m.cli(args, label: String(localized: "Contacting \(host)…"))
         let kv = parseKV(out)
         guard code == 0, let hk = kv["HOSTKEY"], let fp = kv["FINGERPRINT"] else {
-            error = "Couldn't get the server's SSH key. \(lastLines(out, 2))\nCheck the address and that port \(port) is open in the server's firewall."
+            error = String(localized: "Couldn't get the server's SSH key. \(lastLines(out, 2))\nCheck the address and that port \(port) is open in the server's firewall.")
             return
         }
         hostKey = hk; fingerprint = fp; step = .verify
@@ -401,15 +403,15 @@ struct AddServerSheet: View {
                     "--key", keyPath, "--hostkey-line", hostKey]
         if useJump { args += ["--jump", jump, "--private-ip", privateIP] }
         if !region.isEmpty { args += ["--region", region] }
-        let (code, out) = await m.cli(args, label: "Adding \(name)…")
+        let (code, out) = await m.cli(args, label: String(localized: "Adding \(name)…"))
         let saved = FileManager.default.fileExists(atPath: configDir.appendingPathComponent("\(name).conf").path)
         if !saved {
-            error = "Not added: \(lastLines(out, 2))"
+            error = String(localized: "Not added: \(lastLines(out, 2))")
             return
         }
         m.reloadServers(select: name)
         if code != 0 {
-            error = "Saved, but logging in failed: \(lastLines(out, 2)). Fix it with Edit… in Servers."
+            error = String(localized: "Saved, but logging in failed: \(lastLines(out, 2)). Fix it with Edit… in Servers.")
             return
         }
         step = .setup
@@ -432,10 +434,10 @@ struct EditServerSheet: View {
     @State private var newFingerprint = ""
 
     private var problem: String? {
-        if !isValidHost(info.host) { return "Address: an IP address or hostname." }
-        if info.user.isEmpty { return "SSH user is required." }
+        if !isValidHost(info.host) { return String(localized: "Address: an IP address or hostname.") }
+        if info.user.isEmpty { return String(localized: "SSH user is required.") }
         if Int(info.port).map({ !(1...65535).contains($0) }) ?? true { return "SSH port must be 1–65535." }
-        if useJump && (info.jump.isEmpty || !isIPv4(info.privateIP)) { return "Choose a server to go through and its private IPv4." }
+        if useJump && (info.jump.isEmpty || !isIPv4(info.privateIP)) { return String(localized: "Choose a server to go through and its private IPv4.") }
         return nil
     }
 
@@ -510,10 +512,10 @@ struct EditServerSheet: View {
         defer { working = false }
         var args = ["server", "hostkey", "--port", info.port]
         if useJump { args += ["--jump", info.jump, "--private-ip", info.privateIP] } else { args += ["--host", info.host] }
-        let (code, out) = await m.cli(args, label: "Fetching host key…")
+        let (code, out) = await m.cli(args, label: String(localized: "Fetching host key…"))
         let kv = parseKV(out)
         guard code == 0, let hk = kv["HOSTKEY"], let fp = kv["FINGERPRINT"] else {
-            error = "Couldn't get the host key: \(lastLines(out, 2))"; return
+            error = String(localized: "Couldn't get the host key: \(lastLines(out, 2))"); return
         }
         newHostKey = hk; newFingerprint = fp
     }
@@ -527,7 +529,7 @@ struct EditServerSheet: View {
         if !info.region.isEmpty { args += ["--region", info.region] }
         if !newKey.isEmpty { args += ["--key", newKey] }
         if !newHostKey.isEmpty { args += ["--hostkey-line", newHostKey] }
-        let (code, out) = await m.cli(args, label: "Saving \(name)…")
+        let (code, out) = await m.cli(args, label: String(localized: "Saving \(name)…"))
         guard code == 0 else { error = lastLines(out, 2); return }
         m.reloadServers(select: m.server == name ? name : nil)
         if m.server == name { m.manualIP = "" ; Task { await m.check() } }
@@ -574,7 +576,7 @@ struct InstallPanel: View {
     @State private var curWGPort = ""
     @State private var portNotes: [String] = []
 
-    private let dnsChoices = [(1, "System resolvers"), (2, "Google"), (3, "Cloudflare 1.1.1.1"), (4, "OpenDNS"),
+    private let dnsChoices = [(1, String(localized: "System resolvers")), (2, "Google"), (3, "Cloudflare 1.1.1.1"), (4, "OpenDNS"),
                               (5, "Quad9"), (6, "Gcore"), (7, "AdGuard")]
     private var hasOVPN: Bool { (probe["OPENVPN"] ?? "none") != "none" }
     private var hasWG: Bool { (probe["WIREGUARD"] ?? "none") != "none" }
@@ -603,18 +605,18 @@ struct InstallPanel: View {
 
     private var problem: String? {
         func ok(_ s: String) -> Bool { Int(s).map { (1...65535).contains($0) } ?? false }
-        if let o = finalOVPN, !ok(o.port) { return "OpenVPN port must be 1–65535." }
-        if let w = finalWG, !ok(w) { return "WireGuard port must be 1–65535." }
+        if let o = finalOVPN, !ok(o.port) { return String(localized: "OpenVPN port must be 1–65535.") }
+        if let w = finalWG, !ok(w) { return String(localized: "WireGuard port must be 1–65535.") }
         if let o = finalOVPN, let w = finalWG, o.proto == "udp", o.port == w {
-            return "OpenVPN (UDP) and WireGuard can't share a UDP port."
+            return String(localized: "OpenVPN (UDP) and WireGuard can't share a UDP port.")
         }
         if hasIPsec == true || willInstallIPsec {
-            if let w = finalWG, w == "500" || w == "4500" { return "UDP \(w) is IKEv2's; pick another WireGuard port." }
-            if let o = finalOVPN, o.proto == "udp", o.port == "500" || o.port == "4500" { return "UDP \(o.port) is IKEv2's; pick another OpenVPN port." }
+            if let w = finalWG, w == "500" || w == "4500" { return String(localized: "UDP \(w) is IKEv2's; pick another WireGuard port.") }
+            if let o = finalOVPN, o.proto == "udp", o.port == "500" || o.port == "4500" { return String(localized: "UDP \(o.port) is IKEv2's; pick another OpenVPN port.") }
         }
-        if let o = finalOVPN, o.proto == "tcp", o.port == "22" { return "TCP 22 is SSH's port." }
-        if willInstallVPN && nameProblem(client, existing: []) != nil { return "First device name: 1–15 letters, numbers, - or _." }
-        if !hasOVPN && !hasWG && !installOVPN && !installWG { return "Choose at least one VPN to install." }
+        if let o = finalOVPN, o.proto == "tcp", o.port == "22" { return String(localized: "TCP 22 is SSH's port.") }
+        if willInstallVPN && nameProblem(client, existing: []) != nil { return String(localized: "First device name: 1–15 letters, numbers, - or _.") }
+        if !hasOVPN && !hasWG && !installOVPN && !installWG { return String(localized: "Choose at least one VPN to install.") }
         return nil
     }
 
@@ -631,7 +633,7 @@ struct InstallPanel: View {
                     .font(.callout)
                 OutputView(text: m.opLog, height: 260)
             case .finished:
-                Label("\(name) is ready.", lucide: "circle-check").foregroundStyle(.green).font(.headline)
+                Label(String(localized: "\(name) is ready."), lucide: "circle-check").foregroundStyle(.green).font(.headline)
                 Text(m.isLightsail(name)
                      ? "Its profiles were copied to your Desktop. VPN Sync opened its ports in the Lightsail firewall where the key allows it (\(portSummary)); the output says if any need opening by hand."
                      : "Its profiles were copied to your Desktop. Make sure the VPN ports are open in the server's firewall (\(portSummary)).")
@@ -640,7 +642,7 @@ struct InstallPanel: View {
                 OutputView(text: m.opLog, height: 160)
                 HStack { Spacer(); Button("Done") { m.selectServer(name); onDone() }.keyboardShortcut(.defaultAction).glassButton(prominent: true) }
             case .failed:
-                Label("Setup didn't finish.", lucide: "octagon-x").foregroundStyle(.red).font(.headline)
+                Label(String(localized: "Setup didn't finish."), lucide: "octagon-x").foregroundStyle(.red).font(.headline)
                 if let error { Text(error).font(.callout).fixedSize(horizontal: false, vertical: true) }
                 OutputView(text: m.opLog, height: 200)
                 HStack {
@@ -657,14 +659,14 @@ struct InstallPanel: View {
         var parts: [String] = []
         if let o = finalOVPN { parts.append("\(o.proto.uppercased()) \(o.port)") }
         if let w = finalWG { parts.append("UDP \(w)") }
-        if hasIPsec == true || willInstallIPsec { parts.append("UDP 500 and 4500 for IKEv2") }
-        return parts.joined(separator: ", ")
+        if hasIPsec == true || willInstallIPsec { parts.append(String(localized: "UDP 500 and 4500 for IKEv2")) }
+        return parts.joined(separator: clauseSep)
     }
 
     private var options: some View {
         VStack(alignment: .leading, spacing: 10) {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-                GridRow { Text("System").foregroundStyle(.secondary); Text(probe["OS"] ?? "unknown") }
+                GridRow { Text("System").foregroundStyle(.secondary); Text(probe["OS"] ?? String(localized: "unknown")) }
                 GridRow { Text("OpenVPN").foregroundStyle(.secondary); Text(hasOVPN ? "installed (\(probe["OPENVPN"]!.uppercased())), devices kept" : "not installed") }
                 GridRow { Text("WireGuard").foregroundStyle(.secondary); Text(hasWG ? "installed (\(probe["WIREGUARD"]!.uppercased())), devices kept" : "not installed") }
                 GridRow {
@@ -697,8 +699,10 @@ struct InstallPanel: View {
                         }
                     }
                     Text(ovpnPortChanged || wgPortChanged
-                         ? "After setup, VPN Sync moves the VPN to the new port and updates every profile\(m.isLightsail(name) ? " and the Lightsail firewall" : ""). Devices on it need their new profile."
-                         : "Installed VPNs keep their port. Change it here to move them; every profile is updated.")
+                         ? (m.isLightsail(name)
+                            ? String(localized: "After setup, VPN Sync moves the VPN to the new port and updates every profile and the Lightsail firewall. Devices on it need their new profile.")
+                            : String(localized: "After setup, VPN Sync moves the VPN to the new port and updates every profile. Devices on it need their new profile."))
+                         : String(localized: "Installed VPNs keep their port. Change it here to move them; every profile is updated."))
                         .font(.caption).foregroundStyle(ovpnPortChanged || wgPortChanged ? .orange : .secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -733,9 +737,9 @@ struct InstallPanel: View {
                             Text("First device name").frame(width: 170, alignment: .leading)
                             TextField("client", text: $client).textFieldStyle(.roundedBorder).frame(width: 140)
                         }
-                        Text("TCP 443 looks like normal HTTPS traffic and gets through most networks; WireGuard on UDP 443 is faster. " + (m.isLightsail(name)
-                             ? "VPN Sync opens the ports in the Lightsail firewall (the key needs the port permissions; Settings → Lightsail)."
-                             : "Open the same ports in the server's firewall."))
+                        Text(m.isLightsail(name)
+                             ? String(localized: "TCP 443 looks like normal HTTPS traffic and gets through most networks; WireGuard on UDP 443 is faster. VPN Sync opens the ports in the Lightsail firewall (the key needs the port permissions; Settings → Lightsail).")
+                             : String(localized: "TCP 443 looks like normal HTTPS traffic and gets through most networks; WireGuard on UDP 443 is faster. Open the same ports in the server's firewall."))
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     .padding(14)
@@ -769,11 +773,11 @@ struct InstallPanel: View {
 
     private func runProbe() async {
         phase = .probing; error = nil
-        let (code, out) = await m.cli(["server", "probe", name], label: "Checking \(name)…")
+        let (code, out) = await m.cli(["server", "probe", name], label: String(localized: "Checking \(name)…"))
         probe = parseKV(out)
         guard code == 0, probe["OS"] != nil else {
-            error = probe["SUDO"] == "no" ? "The SSH user can't run sudo without a password. Use root or a user with passwordless sudo."
-                                          : "Couldn't reach \(name): \(lastLines(out, 2))"
+            error = probe["SUDO"] == "no" ? String(localized: "The SSH user can't run sudo without a password. Use root or a user with passwordless sudo.")
+                                          : String(localized: "Couldn't reach \(name): \(lastLines(out, 2))")
             phase = .failed; return
         }
         if let o = probed("OPENVPN") { installOVPN = false; curOVPNProto = o.proto; curOVPNPort = o.port }
@@ -791,7 +795,7 @@ struct InstallPanel: View {
             if installWG { args += ["--wireguard-port", wgPort] } else { args.append("--no-wireguard") }
         }
         if willInstallIPsec { args.append("--ipsec") }
-        let (code, out) = await m.cli(args, label: "Setting up \(name)…")
+        let (code, out) = await m.cli(args, label: String(localized: "Setting up \(name)…"))
         if code == 0 && out.contains("install finished") {
             // then move installed VPNs whose port was changed here
             var log = m.opLog
@@ -800,16 +804,16 @@ struct InstallPanel: View {
             if ovpnPortChanged { steps.append(["ports", "set", name, "openvpn", curOVPNPort, curOVPNProto]) }
             if wgPortChanged { steps.append(["ports", "set", name, "wireguard", curWGPort]) }
             for a in steps {
-                let (c, o) = await m.cli(a, label: "Changing \(a[3] == "openvpn" ? "OpenVPN" : "WireGuard")'s port on \(name)…")
+                let (c, o) = await m.cli(a, label: String(localized: "Changing \(a[3] == "openvpn" ? "OpenVPN" : "WireGuard")'s port on \(name)…"))
                 log += o
                 if c != 0 {
                     m.opLog = log
-                    error = "Setup finished, but the port wasn't changed: " + lastLines(o, 1).replacingOccurrences(of: "vpn-sync: ", with: "")
+                    error = String(localized: "Setup finished, but the port wasn't changed: \(lastLines(o, 1).replacingOccurrences(of: "vpn-sync: ", with: ""))")
                     phase = .failed
                     return
                 }
                 if let ch = parseKV(o)["CHANGED"]?.split(separator: " "), ch.count == 3 {
-                    portNotes.append("\(ch[0] == "openvpn" ? "OpenVPN" : "WireGuard") now uses \(ch[1].uppercased()) \(ch[2]).")
+                    portNotes.append(String(localized: "\(ch[0] == "openvpn" ? "OpenVPN" : "WireGuard") now uses \(ch[1].uppercased()) \(ch[2])."))
                 }
             }
             m.opLog = log

@@ -10,7 +10,8 @@ struct MenuBarLabel: View {
         let n = m.onlineEverywhere
         let a = m.limitAttention
         let showMark = m.menuBarLimits && (a.paused > 0 || a.near > 0)
-        let help = "VPN Sync: \(n) device\(n == 1 ? "" : "s") online" + (m.limitAttentionText.map { ", \($0)" } ?? "")
+        let online = n == 1 ? String(localized: "VPN Sync: 1 device online") : String(localized: "VPN Sync: \(n) devices online")
+        let help = m.limitAttentionText.map { String(localized: "\(online), \($0)") } ?? online
         Group {
             if showMark {
                 // The menu bar shows only one image and one text of a label, so with the limit
@@ -154,9 +155,9 @@ struct MenuBarPanel: View {
 
     private var summary: String {
         let n = m.servers.count
-        let servers = "\(n) server\(n == 1 ? "" : "s")"
-        guard m.monitoring else { return "Live monitoring is off" }
-        return "\(m.onlineEverywhere) online on \(servers)"
+        guard m.monitoring else { return String(localized: "Live monitoring is off") }
+        let o = m.onlineEverywhere
+        return n == 1 ? String(localized: "\(o) online on 1 server") : String(localized: "\(o) online on \(n) servers")
     }
 
     @ViewBuilder private func serverCard(_ s: String) -> some View {
@@ -286,9 +287,9 @@ struct MenuBarPanel: View {
     }
 
     private func renameProblem(_ s: String) -> String? {
-        if newName.isEmpty { return "Enter a name." }
-        if !isValidServerName(newName) { return "Use letters, numbers, - and _ (no spaces), up to 40." }
-        if newName != s && m.servers.contains(newName) { return "“\(newName)” already exists." }
+        if newName.isEmpty { return String(localized: "Enter a name.") }
+        if !isValidServerName(newName) { return String(localized: "Use letters, numbers, - and _ (no spaces), up to 40.") }
+        if newName != s && m.servers.contains(newName) { return String(localized: "“\(newName)” already exists.") }
         return nil
     }
 
@@ -297,14 +298,14 @@ struct MenuBarPanel: View {
         removing = true
         let to = newName
         Task {
-            let (code, out) = await m.cli(["server", "rename", s, to], label: "Renaming \(s)…")
+            let (code, out) = await m.cli(["server", "rename", s, to], label: String(localized: "Renaming \(s)…"))
             removing = false
             renaming = nil
             if code == 0 {
                 m.reloadServers(select: m.server == s ? to : nil)
             } else {
                 let msg = out.split(separator: "\n").last.map { String($0).replacingOccurrences(of: "vpn-sync: ", with: "") }
-                removeError = (s, "Not renamed: \(msg ?? "unknown error").")
+                removeError = (s, String(localized: "Not renamed: \(msg ?? String(localized: "unknown error"))."))
             }
         }
     }
@@ -312,7 +313,7 @@ struct MenuBarPanel: View {
     private func remove(_ s: String) {
         removing = true
         Task {
-            let (code, out) = await m.cli(["server", "remove", s], label: "Removing \(s)…")
+            let (code, out) = await m.cli(["server", "remove", s], label: String(localized: "Removing \(s)…"))
             removing = false
             if code == 0 {
                 confirmRemove = nil
@@ -323,7 +324,7 @@ struct MenuBarPanel: View {
                 confirmRemove = nil
                 // e.g. "edge-2 connects through edge-1; change that first"
                 let msg = out.split(separator: "\n").last.map { String($0).replacingOccurrences(of: "vpn-sync: ", with: "") }
-                removeError = (s, "Not removed: \(msg ?? "unknown error").")
+                removeError = (s, String(localized: "Not removed: \(msg ?? String(localized: "unknown error"))."))
             }
         }
     }
@@ -340,10 +341,10 @@ struct MenuBarPanel: View {
         switch w?.link ?? .off {
         case .live:
             let paused = w.flatMap { m.usageByServer[$0.server]?.paused.count } ?? 0
-            return "\(count) online" + (paused > 0 ? ", \(paused) paused" : "")
-        case .connecting: return "connecting…"
-        case .retrying: return "unreachable"
-        case .off: return "not monitored"
+            return paused > 0 ? String(localized: "\(count) online, \(paused) paused") : String(localized: "\(count) online")
+        case .connecting: return String(localized: "connecting…")
+        case .retrying: return String(localized: "unreachable")
+        case .off: return String(localized: "not monitored")
         }
     }
 }
@@ -365,7 +366,7 @@ struct PanelPorts: View {
         }
         .help("Ports \(server) listens on; its firewall must allow them. Each device line shows the device's own address and port.")
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Ports: " + items.map { "\($0.0) \($0.1)" }.joined(separator: ", "))
+        .accessibilityLabel(String(localized: "Ports: \(items.map { "\($0.0) \($0.1)" }.joined(separator: clauseSep))"))
     }
     @ViewBuilder private var chips: some View { ForEach(items, id: \.0) { chip($0.0, $0.1) } }
     private func chip(_ label: String, _ value: String) -> some View {

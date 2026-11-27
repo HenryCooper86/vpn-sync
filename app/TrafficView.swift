@@ -117,7 +117,7 @@ struct TrafficView: View {
         .glassPanel(20)
     }
 
-    private func legendRow(color: Color, label: String, value: String) -> some View {
+    private func legendRow(color: Color, label: LocalizedStringKey, value: String) -> some View {
         HStack(spacing: 6) {
             Capsule().fill(color).frame(width: 12, height: 4)
             Text(label).font(.caption).foregroundStyle(.secondary)
@@ -234,7 +234,7 @@ struct TrafficView: View {
         .glassPanel(20)
     }
 
-    private func legendChip(_ color: Color, _ label: String, _ value: String) -> some View {
+    private func legendChip(_ color: Color, _ label: LocalizedStringKey, _ value: String) -> some View {
         HStack(spacing: 5) {
             Capsule().fill(color).frame(width: 12, height: 4)
             Text(label).font(.caption).foregroundStyle(.secondary)
@@ -253,7 +253,7 @@ struct TrafficView: View {
             HStack(spacing: 8) {
                 Text("Devices online").font(.system(.callout, design: .rounded).weight(.semibold))
                 Spacer()
-                Text(now.map { "\($0.online) now" } ?? "–")
+                Text(now.map { String(localized: "\($0.online) now") } ?? "–")
                     .font(.system(.caption, design: .rounded).weight(.semibold)).monospacedDigit()
                     .foregroundStyle(.secondary)
             }
@@ -314,7 +314,8 @@ struct TrafficView: View {
                 Text("Server traffic per day").font(.system(.callout, design: .rounded).weight(.semibold))
                 Spacer()
                 if let d = hoverDay ?? days.last {
-                    Text("\(d.day == today ? "Today" : d.date.formatted(.dateTime.month(.abbreviated).day())): \(formatBytes(d.total))")
+                    let dayLabel = d.day == today ? String(localized: "Today") : d.date.formatted(.dateTime.month(.abbreviated).day())
+                    Text("\(dayLabel): \(formatBytes(d.total))")
                         .font(.system(.caption, design: .rounded).weight(.semibold)).monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
@@ -352,7 +353,7 @@ struct TrafficView: View {
                     hoverDay = days.first { $0.day == key }
                 } }
                 .frame(height: 110)
-                .help(hoverDay.map { "In \(formatBytes($0.rx)), out \(formatBytes($0.tx))" } ?? "All network traffic of the server per day, counted by vnstat")
+                .help(hoverDay.map { String(localized: "In \(formatBytes($0.rx)), out \(formatBytes($0.tx))") } ?? String(localized: "All network traffic of the server per day, counted by vnstat"))
                 .accessibilityLabel("Server traffic per day for the last 30 days")
             }
         }
@@ -399,7 +400,7 @@ struct TrafficView: View {
         }
     }
 
-    private func figure(_ title: String, _ value: String, _ note: String) -> some View {
+    private func figure(_ title: LocalizedStringKey, _ value: String, _ note: LocalizedStringKey) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.caption).foregroundStyle(.secondary)
             Text(value).font(.system(size: 18, weight: .semibold, design: .rounded)).monospacedDigit()
@@ -434,7 +435,9 @@ struct TrafficView: View {
                 Text("Usage and limits").font(.system(.callout, design: .rounded).weight(.semibold))
                 Spacer()
                 if m.usage != nil {
-                    Text("\(formatBytes(monthTotal)) this month, \(limited) limit\(limited == 1 ? "" : "s")" + (paused > 0 ? ", \(paused) paused" : ""))
+                    let limitText = limited == 1 ? String(localized: "\(limited) limit") : String(localized: "\(limited) limits")
+                    let monthText = String(localized: "\(formatBytes(monthTotal)) this month, \(limitText)")
+                    Text(paused > 0 ? String(localized: "\(monthText), \(paused) paused") : monthText)
                         .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 }
             }
@@ -477,7 +480,7 @@ struct TrafficView: View {
                 if let limit, let (f, text) = limit.tightest(u) {
                     HStack(spacing: 8) {
                         UsageMeter(fraction: f, width: 70)
-                        Text(text + (f >= 1 ? ", reached" : limit.pauses ? ", pauses at 100%" : ", alerts only"))
+                        Text(f >= 1 ? String(localized: "\(text), reached") : limit.pauses ? String(localized: "\(text), pauses at 100%") : String(localized: "\(text), alerts only"))
                             .font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
                     }
                 }
@@ -492,7 +495,7 @@ struct TrafficView: View {
         .help("This month: download \(formatBytes(u.monthDown)), upload \(formatBytes(u.monthUp)). Today: \(formatBytes(u.today)).")
     }
 
-    private func legendDot(_ c: Color, _ label: String) -> some View {
+    private func legendDot(_ c: Color, _ label: LocalizedStringKey) -> some View {
         HStack(spacing: 5) {
             Capsule().fill(c).frame(width: 10, height: 5)
             Text(label).font(.caption2).foregroundStyle(.secondary)
@@ -501,7 +504,7 @@ struct TrafficView: View {
 
     // MARK: ranked lists
 
-    private func ranked(title: String, rows: [String: ByteCount], pinnable: Bool) -> some View {
+    private func ranked(title: LocalizedStringKey, rows: [String: ByteCount], pinnable: Bool) -> some View {
         let sorted = rows.sorted { a, b in
             let pa = pinnable && m.isPinned(a.key), pb = pinnable && m.isPinned(b.key)
             if pa != pb { return pa }
@@ -598,6 +601,6 @@ struct Sparkline: View {
 
     private var helpText: String {
         let d = history.map(\.down).max() ?? 0, u = history.map(\.up).max() ?? 0
-        return "Last 15 minutes. Download (blue, above) peak \(formatRate(d)); upload (orange, below) peak \(formatRate(u))."
+        return String(localized: "Last 15 minutes. Download (blue, above) peak \(formatRate(d)); upload (orange, below) peak \(formatRate(u)).")
     }
 }

@@ -19,7 +19,7 @@ struct SettingsView: View {
                     ForEach(store.servers) { s in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(s.name).font(.body.weight(.medium))
-                            Text("\(s.user)@\(s.address)\(s.jump.map { ", through \($0)" } ?? "")").font(.caption).foregroundStyle(.secondary)
+                            Text("\(s.user)@\(s.address)" + (s.jump.map { String(localized: ", through \($0)") } ?? "")).font(.caption).foregroundStyle(.secondary)
                         }
                         .swipeActions { Button("Remove", role: .destructive) { removing = s.name } }
                     }
@@ -35,6 +35,18 @@ struct SettingsView: View {
                         Text("Off").tag(0)
                         ForEach([50, 70, 80, 90], id: \.self) { Text("\($0)%").tag($0) }
                     }
+                }
+                Section {
+                    // iOS keeps each app's language in the Settings app (VPN Sync → Language)
+                    Button {
+                        if let u = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(u) }
+                    } label: {
+                        LabeledContent("Language") {
+                            Text(Locale.current.localizedString(forIdentifier: Bundle.main.preferredLocalizations.first ?? "en") ?? "")
+                        }
+                    }
+                } footer: {
+                    Text("Opens VPN Sync in the Settings app, where you can choose English or Simplified Chinese.")
                 }
                 Section {
                     LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
@@ -80,7 +92,7 @@ struct ImportSheet: View {
                         .textInputAutocapitalization(.characters).autocorrectionDisabled()
                         .focused($focused).submitLabel(.done).onSubmit(open)
                 } header: { Text("Passphrase") } footer: {
-                    Text(error ?? "The Mac showed it when it exported the file.").foregroundStyle(error == nil ? Color.secondary : .red)
+                    Text(error ?? String(localized: "The Mac showed it when it exported the file.")).foregroundStyle(error == nil ? Color.secondary : .red)
                 }
                 if working { HStack { ProgressView(); Text("Unlocking…") } }
             }
@@ -108,7 +120,7 @@ struct ImportSheet: View {
             case .success:
                 do {
                     let n = try store.importBundle(data, passphrase: phrase)
-                    store.show("Imported \(n) server\(n == 1 ? "" : "s").")
+                    store.show(n == 1 ? String(localized: "Imported 1 server.") : String(localized: "Imported \(n) servers."))
                     dismiss()
                 } catch { self.error = error.localizedDescription }
             }
@@ -143,7 +155,7 @@ struct WelcomeView: View {
             if case .success(let url) = result { store.pendingImport = readImport(url) }
         }
     }
-    private func step(_ n: Int, _ text: String) -> some View {
+    private func step(_ n: Int, _ text: LocalizedStringKey) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text("\(n)").font(.subheadline.weight(.bold)).frame(width: 22, height: 22).background(Circle().fill(.tint.opacity(0.2)))
             Text(text).font(.subheadline)

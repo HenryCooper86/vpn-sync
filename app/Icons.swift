@@ -42,8 +42,13 @@ struct LucideIcon: View {
 }
 
 extension Label where Title == Text, Icon == LucideIcon {
-    /// Label("Check", lucide: "search")
-    init(_ title: String, lucide: String, size: CGFloat = 15) {
+    /// Label("Check", lucide: "search"): a literal title is localized, like SwiftUI's own Label.
+    init(_ title: LocalizedStringKey, lucide: String, size: CGFloat = 15) {
+        self.init { Text(title) } icon: { LucideIcon(lucide, size: size) }
+    }
+    /// A title that's already a String (e.g. from String(localized:)) is shown as is.
+    @_disfavoredOverload
+    init<S: StringProtocol>(_ title: S, lucide: String, size: CGFloat = 15) {
         self.init { Text(title) } icon: { LucideIcon(lucide, size: size) }
     }
 }

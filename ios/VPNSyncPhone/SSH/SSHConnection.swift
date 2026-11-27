@@ -19,11 +19,11 @@ enum SSHError: LocalizedError {
     case hostKeyMismatch, badPinnedKey, authFailed, closed, timeout
     var errorDescription: String? {
         switch self {
-        case .hostKeyMismatch: return "The server's host key doesn't match the one VPN Sync trusts. Not connecting."
-        case .badPinnedKey: return "The trusted host key for this server is missing or damaged; export the servers from the Mac again."
-        case .authFailed: return "The server didn't accept the key."
-        case .closed: return "The connection closed."
-        case .timeout: return "The server didn't answer in time."
+        case .hostKeyMismatch: return String(localized: "The server's host key doesn't match the one VPN Sync trusts. Not connecting.")
+        case .badPinnedKey: return String(localized: "The trusted host key for this server is missing or damaged; export the servers from the Mac again.")
+        case .authFailed: return String(localized: "The server didn't accept the key.")
+        case .closed: return String(localized: "The connection closed.")
+        case .timeout: return String(localized: "The server didn't answer in time.")
         }
     }
 }

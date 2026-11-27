@@ -12,10 +12,10 @@ struct InstanceState: Equatable {
     var isDown: Bool { state == "stopped" || state == "stopping" }
     var label: String {
         switch state {
-        case "running": return "running"
-        case "stopped": return "stopped"
-        case "stopping": return "stopping…"
-        case "pending": return "starting…"
+        case "running": return String(localized: "running", comment: "server state, lowercase, used in 'Tokyo is running'")
+        case "stopped": return String(localized: "stopped", comment: "server state, lowercase, used in 'Tokyo is stopped'")
+        case "stopping": return String(localized: "stopping…", comment: "server state, lowercase")
+        case "pending": return String(localized: "starting…", comment: "server state, lowercase")
         default: return state
         }
     }
@@ -42,14 +42,14 @@ extension Model {
     func powerServer(_ s: String, start: Bool) async {
         if start {
             instanceStates[s] = InstanceState(state: "pending", ip: nil, staticIP: instanceStates[s]?.staticIP ?? false)
-            let (code, out) = await cli(["aws", "start", s, "--wait"], label: "Starting \(s)…")
+            let (code, out) = await cli(["aws", "start", s, "--wait"], label: String(localized: "Starting \(s)…"))
             guard code == 0 else {
-                status = .failed("Start failed: \(lastLines(out, 2).replacingOccurrences(of: "vpn-sync: ", with: ""))")
+                status = .failed(String(localized: "Start failed: \(lastLines(out, 2).replacingOccurrences(of: "vpn-sync: ", with: ""))"))
                 await refreshInstanceState(s)
                 return
             }
             await refreshInstanceState(s)
-            notices = ["\(s) is running again. Waiting for it to finish booting…"]
+            notices = [String(localized: "\(s) is running again. Waiting for it to finish booting…")]
             // the VPNs need a minute after the instance reports running
             for _ in 0..<18 {
                 let (c, _) = await runCLI(["--check", s], quiet: true)
@@ -58,15 +58,17 @@ extension Model {
             }
             unreachableNotified.remove(s)
             await recover(s)
-            notices = ["\(s) is back." + (instanceStates[s]?.staticIP == false ? " If its IP changed, the profiles on the Desktop are updated; phones and TVs need them again." : "")]
+            notices = [instanceStates[s]?.staticIP == false
+                ? String(localized: "\(s) is back. If its IP changed, the profiles on the Desktop are updated; phones and TVs need them again.")
+                : String(localized: "\(s) is back.")]
         } else {
-            let (code, out) = await cli(["aws", "stop", s], label: "Stopping \(s)…")
+            let (code, out) = await cli(["aws", "stop", s], label: String(localized: "Stopping \(s)…"))
             guard code == 0 else {
-                status = .failed("Stop failed: \(lastLines(out, 2).replacingOccurrences(of: "vpn-sync: ", with: ""))")
+                status = .failed(String(localized: "Stop failed: \(lastLines(out, 2).replacingOccurrences(of: "vpn-sync: ", with: ""))"))
                 return
             }
             instanceStates[s] = InstanceState(state: "stopping", ip: nil, staticIP: instanceStates[s]?.staticIP ?? false)
-            notices = ["\(s) is stopping. Every device is disconnected until you start it again."]
+            notices = [String(localized: "\(s) is stopping. Every device is disconnected until you start it again.")]
             status = .upToDate
             // follow it until Lightsail says stopped
             Task { @MainActor in

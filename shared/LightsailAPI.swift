@@ -45,7 +45,9 @@ enum LightsailError: LocalizedError {
     case notAllowed(String), api(String)
     var errorDescription: String? {
         switch self {
-        case .notAllowed(let action): return "This AWS key isn't allowed to \(action). Add lightsail:\(action == "stop" ? "StopInstance" : action == "start" ? "StartInstance" : "GetInstance") to its policy (VPN Sync on the Mac: Settings → Lightsail)."
+        case .notAllowed(let action):
+            let perm = action == "stop" ? "StopInstance" : action == "start" ? "StartInstance" : "GetInstance"
+            return String(localized: "This AWS key isn't allowed to \(action). Add lightsail:\(perm) to its policy (VPN Sync on the Mac: Settings → Lightsail).")
         case .api(let m): return "Lightsail: \(m)"
         }
     }
@@ -59,8 +61,8 @@ struct LightsailInstance: Equatable {
     var isDown: Bool { state == "stopped" || state == "stopping" }
     var label: String {
         switch state {
-        case "stopping": return "stopping…"
-        case "pending": return "starting…"
+        case "stopping": return String(localized: "stopping…")
+        case "pending": return String(localized: "starting…")
         default: return state
         }
     }

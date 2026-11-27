@@ -86,10 +86,15 @@ final class ServerWatcher {
             let first: (ip: String, port: Int?)? = o.map { ($0.realIP, $0.port) }
                 ?? k.flatMap { $0.realIP == "-" ? nil : ($0.realIP, $0.port) }
                 ?? w.flatMap { p in p.endpoint.map { ($0, p.port) } }
-            let list = vpns.count <= 2 ? vpns.joined(separator: " and ")
-                : vpns.dropLast().joined(separator: ", ") + " and " + vpns.last!
+            let list: String
+            switch vpns.count {
+            case 1: list = vpns[0]
+            case 2: list = String(localized: "\(vpns[0]) and \(vpns[1])")
+            case 3: list = String(localized: "\(vpns[0]), \(vpns[1]) and \(vpns[2])")
+            default: list = vpns.joined(separator: listSep)
+            }
             let from = first.map { f in (GeoDB.shared.country(f.ip).map { flagEmoji($0) + " " } ?? "") + addressWithPort(f.ip, f.port) }
-            let via = "\(list) from \(from ?? "an unknown address")"
+            let via = String(localized: "\(list) from \(from ?? unknownAddressText())")
             return (n, via, rates[n])
         }
     }
@@ -427,9 +432,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     func post(_ e: LiveEvent, server: String) {
         let c = UNMutableNotificationContent()
-        c.title = "\(e.device) \(e.connected ? "connected" : "disconnected")"
+        c.title = e.connected ? String(localized: "\(e.device) connected") : String(localized: "\(e.device) disconnected")
         c.subtitle = server
-        c.body = e.vpn + (e.ip == "-" ? "" : (e.connected ? " from " : " · ") + e.ip)
+        c.body = e.ip == "-" ? e.vpn : (e.connected ? String(localized: "\(e.vpn) from \(e.ip)") : e.vpn + " · " + e.ip)
         c.threadIdentifier = server
         if e.connected { c.sound = .default }
         // One notification per device: a newer one replaces the older one.
@@ -517,15 +522,24 @@ extension Model {
     func runService(_ a: ServiceAction) async {
         if a.vpn == "instance" { await powerServer(a.server, start: a.action == "start"); return }
         let args = a.action == "reboot" ? ["reboot", a.server] : ["service", a.server, a.vpn, a.action]
-        let label = a.action == "reboot" ? "Rebooting \(a.server)…"
-            : "\(a.action == "stop" ? "Stopping" : a.action == "start" ? "Starting" : "Restarting") \(a.vpnLabel)…"
+        let label = a.action == "reboot" ? String(localized: "Rebooting \(a.server)…")
+            : a.action == "stop" ? String(localized: "Stopping \(a.vpnLabel)…")
+            : a.action == "start" ? String(localized: "Starting \(a.vpnLabel)…")
+            : String(localized: "Restarting \(a.vpnLabel)…")
         let (code, out) = await cli(args, label: label)
         if code == 0 {
-            notices = [a.action == "reboot" ? "\(a.server) is rebooting. Live monitoring reconnects when it's back."
-                       : "\(a.vpnLabel) on \(a.server): \(a.action == "stop" ? "stopped" : a.action == "start" ? "started" : "restarted")."]
+            notices = [a.action == "reboot" ? String(localized: "\(a.server) is rebooting. Live monitoring reconnects when it's back.")
+                       : a.action == "stop" ? String(localized: "\(a.vpnLabel) on \(a.server): stopped.")
+                       : a.action == "start" ? String(localized: "\(a.vpnLabel) on \(a.server): started.")
+                       : String(localized: "\(a.vpnLabel) on \(a.server): restarted.")]
             status = .upToDate
         } else {
-            status = .failed("\(a.vpnLabel) \(a.action) failed: \(lastLines(out, 2))")
+            let err = lastLines(out, 2)
+            status = .failed(a.action == "stop" ? String(localized: "\(a.vpnLabel) stop failed: \(err)")
+                             : a.action == "start" ? String(localized: "\(a.vpnLabel) start failed: \(err)")
+                             : a.action == "restart" ? String(localized: "\(a.vpnLabel) restart failed: \(err)")
+                             : a.action == "reboot" ? String(localized: "\(a.vpnLabel) reboot failed: \(err)")
+                             : "\(a.vpnLabel) \(a.action) failed: \(err)")
         }
     }
 }
@@ -568,19 +582,19 @@ struct LiveLine: View {
         var lines: [String] = []
         let ports = m.ports
         func line(_ vpn: String, _ label: String, _ ip: String?, _ port: Int?) {
-            let server = ports.text(vpn).map { " to \($0)" } ?? ""
-            let from = ip.flatMap { $0 == "-" ? nil : addressWithPort($0, port) } ?? "an unknown address"
-            lines.append("\(label)\(server) from \(from)\(ip.flatMap(countryOf).map { " (\($0))" } ?? "")")
+            let from = ip.flatMap { $0 == "-" ? nil : addressWithPort($0, port) } ?? unknownAddressText()
+            let base = ports.text(vpn).map { String(localized: "\(label) to \($0) from \(from)") } ?? String(localized: "\(label) from \(from)")
+            lines.append(base + (ip.flatMap(countryOf).map { " (\($0))" } ?? ""))
         }
         if let o = m.ovpnLive[name] { line("openvpn", "OpenVPN", o.realIP, o.port) }
         if m.wgOnline(name), let w = m.wgLive[name] { line("wireguard", "WireGuard", w.endpoint, w.port) }
         if let k = m.ikeLive[name] { line("ipsec", "IKEv2", k.realIP, k.port) }
-        if lines.isEmpty, let loc = location { return "Connecting from \(loc)" }
+        if lines.isEmpty, let loc = location { return String(localized: "Connecting from \(loc)") }
         return lines.joined(separator: "\n")
     }
 
     private func from(_ ip: String?, _ port: Int?) -> String {
-        guard let ip, ip != "-" else { return "an unknown address" }
+        guard let ip, ip != "-" else { return unknownAddressText() }
         let flag = GeoDB.shared.country(ip).map { flagEmoji($0) + " " } ?? ""
         return flag + addressWithPort(ip, port)
     }
@@ -588,24 +602,30 @@ struct LiveLine: View {
     private var summary: String? {
         guard m.lastSnapshot != nil else { return nil }
         var parts: [String] = []
+        func conn(_ vpn: String, _ addr: String, since: Date?) -> String {
+            if parts.isEmpty {
+                if let since { return String(localized: "On \(vpn) from \(addr) since \(since.formatted(date: .omitted, time: .shortened))") }
+                return String(localized: "On \(vpn) from \(addr)")
+            }
+            return String(localized: "and \(vpn) from \(addr)")
+        }
         if let o = m.ovpnLive[name] {
-            parts.append("On OpenVPN from \(from(o.realIP, o.port)) since \(o.since.formatted(date: .omitted, time: .shortened))")
+            parts.append(conn("OpenVPN", from(o.realIP, o.port), since: o.since))
         }
         if m.wgOnline(name), let w = m.wgLive[name] {
-            parts.append("\(parts.isEmpty ? "On " : "and ")WireGuard from \(from(w.endpoint, w.port))")
+            parts.append(conn("WireGuard", from(w.endpoint, w.port), since: nil))
         }
         if let k = m.ikeLive[name] {
-            parts.append("\(parts.isEmpty ? "On " : "and ")IKEv2 from \(from(k.realIP, k.port))"
-                         + (parts.isEmpty ? " since \(k.since.formatted(date: .omitted, time: .shortened))" : ""))
+            parts.append(conn("IKEv2", from(k.realIP, k.port), since: k.since))
         }
-        if !parts.isEmpty { return parts.joined(separator: ", ") }
+        if !parts.isEmpty { return parts.joined(separator: clauseSep) }
         if let hs = m.wgLive[name]?.handshake {
-            return "Last seen \(hs.formatted(.relative(presentation: .named)))"
+            return String(localized: "Last seen \(hs.formatted(.relative(presentation: .named)))")
         }
         if let e = m.events.first(where: { $0.device == name && !$0.connected }) {
-            return "Disconnected \(e.time.formatted(.relative(presentation: .named)))"
+            return String(localized: "Disconnected \(e.time.formatted(.relative(presentation: .named)))")
         }
-        return "Not connected"
+        return String(localized: "Not connected")
     }
 }
 
@@ -644,10 +664,10 @@ struct LiveToggle: View {
     }
     private var label: String {
         switch m.liveState {
-        case .live: return "Live"
-        case .connecting: return "Connecting"
-        case .retrying: return "Reconnecting"
-        case .off: return m.monitoring ? "Live" : "Live off"
+        case .live: return String(localized: "Live")
+        case .connecting: return String(localized: "Connecting")
+        case .retrying: return String(localized: "Reconnecting")
+        case .off: return m.monitoring ? String(localized: "Live") : String(localized: "Live off")
         }
     }
 }
@@ -740,8 +760,8 @@ struct ServicesBar: View {
     }
 
     private func serviceHelp(_ vpn: String, _ label: String, _ s: ServiceState?) -> String {
-        var t = s?.since.map { "\(label) running since \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "\(label) service"
-        if let p = m.ports.text(vpn) { t += "\nListens on \(p); the server's firewall must allow it." }
+        var t = s?.since.map { String(localized: "\(label) running since \($0.formatted(date: .abbreviated, time: .shortened))") } ?? String(localized: "\(label) service")
+        if let p = m.ports.text(vpn) { t += "\n" + String(localized: "Listens on \(p); the server's firewall must allow it.") }
         return t
     }
 
@@ -755,10 +775,10 @@ struct ServicesBar: View {
     }
     private func stateText(_ s: ServiceState?) -> String {
         switch s?.state {
-        case "active": return "running"
-        case "inactive": return "stopped"
-        case "failed": return "failed"
-        case nil: return m.monitoring ? "checking" : "unknown"
+        case "active": return String(localized: "running", comment: "service state, lowercase")
+        case "inactive": return String(localized: "stopped", comment: "service state, lowercase")
+        case "failed": return String(localized: "failed", comment: "service state, lowercase")
+        case nil: return m.monitoring ? String(localized: "checking", comment: "service state, lowercase") : String(localized: "unknown", comment: "service state, lowercase")
         case let x?: return x
         }
     }
@@ -818,7 +838,7 @@ struct ActivityView: View {
                 .frame(width: 12)
             Text(e.device).font(.system(.callout, design: .rounded).weight(.semibold))
             Text(e.connected ? "connected" : "disconnected").font(.callout)
-            Text("on \(e.vpn)\(e.ip == "-" ? "" : " from \(withFlag(e.ip))")").font(.callout).foregroundStyle(.secondary)
+            Text(e.ip == "-" ? String(localized: "on \(e.vpn)") : String(localized: "on \(e.vpn) from \(withFlag(e.ip))")).font(.callout).foregroundStyle(.secondary)
                 .help(countryOf(e.ip) ?? "")
             Spacer()
             // the device's speed now, on its newest event only, while it's online
@@ -908,8 +928,8 @@ struct ActivityView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Last hour").font(.system(.callout, design: .rounded).weight(.semibold))
                 HStack(spacing: 10) {
-                    legend(TrafficColor.online(t.dark), "\(connects) connect\(connects == 1 ? "" : "s")")
-                    legend(Color.secondary.opacity(0.6), "\(disconnects) disconnect\(disconnects == 1 ? "" : "s")")
+                    legend(TrafficColor.online(t.dark), connects == 1 ? String(localized: "\(connects) connect") : String(localized: "\(connects) connects"))
+                    legend(Color.secondary.opacity(0.6), disconnects == 1 ? String(localized: "\(disconnects) disconnect") : String(localized: "\(disconnects) disconnects"))
                 }
             }
             .fixedSize()
@@ -991,9 +1011,9 @@ struct PortsMenu: View {
         return m.allDeviceNames.filter { m.isOnline($0) }.sorted { $0.localizedStandardCompare($1) == .orderedAscending }.flatMap { n -> [String] in
             var out: [String] = []
             func add(_ vpn: String, _ ip: String?, _ port: Int?) {
-                let server = ports.text(vpn).map { " (\($0))" } ?? ""
-                let from = ip.flatMap { $0 == "-" ? nil : addressWithPort($0, port) } ?? "an unknown address"
-                out.append("\(n): \(portLabel(vpn))\(server) from \(from)")
+                let from = ip.flatMap { $0 == "-" ? nil : addressWithPort($0, port) } ?? unknownAddressText()
+                out.append(ports.text(vpn).map { String(localized: "\(n): \(portLabel(vpn)) (\($0)) from \(from)") }
+                           ?? String(localized: "\(n): \(portLabel(vpn)) from \(from)"))
             }
             if let o = m.ovpnLive[n] { add("openvpn", o.realIP, o.port) }
             if m.wgOnline(n), let w = m.wgLive[n] { add("wireguard", w.endpoint, w.port) }
@@ -1002,3 +1022,6 @@ struct PortsMenu: View {
         }
     }
 }
+
+/// Placeholder for a device whose address the server did not report.
+func unknownAddressText() -> String { String(localized: "an unknown address") }

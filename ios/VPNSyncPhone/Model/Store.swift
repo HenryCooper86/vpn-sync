@@ -25,8 +25,8 @@ enum StoreError: LocalizedError {
     case unknownServer(String), noKey(String), failed(String)
     var errorDescription: String? {
         switch self {
-        case .unknownServer(let s): return "No server named \(s)."
-        case .noKey(let s): return "The key for \(s) is missing; import the servers again."
+        case .unknownServer(let s): return String(localized: "No server named \(s).")
+        case .noKey(let s): return String(localized: "The key for \(s) is missing; import the servers again.")
         case .failed(let m): return m
         }
     }
@@ -262,7 +262,7 @@ final class Store: ObservableObject {
         let r = try await run(name, command, timeout: timeout)
         guard r.code == 0 else {
             let msg = (r.stderr.isEmpty ? r.text : r.stderr).split(separator: "\n").suffix(2).joined(separator: " ")
-            throw StoreError.failed(msg.isEmpty ? "The server said no (exit \(r.code))." : msg)
+            throw StoreError.failed(msg.isEmpty ? String(localized: "The server said no (exit \(r.code)).") : msg)
         }
         return r.text
     }
@@ -285,7 +285,7 @@ final class Store: ObservableObject {
         let ctx = LAContext()
         var err: NSError?
         guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &err) else { locked = false; return }
-        ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock your servers") { ok, _ in
+        ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: String(localized: "Unlock your servers")) { ok, _ in
             Task { @MainActor in if ok { self.locked = false; for l in self.live.values { l.start() } } }
         }
     }
@@ -316,7 +316,7 @@ enum Keychain {
                                 kSecAttrAccount as String: server, kSecValueData as String: Data(pem.utf8),
                                 kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
         let st = SecItemAdd(q as CFDictionary, nil)
-        guard st == errSecSuccess else { throw StoreError.failed("Couldn't save the key for \(server) (\(st)).") }
+        guard st == errSecSuccess else { throw StoreError.failed(String(localized: "Couldn't save the key for \(server) (\(st)).")) }
     }
 
     static func key(for server: String) -> String? {
@@ -337,7 +337,7 @@ enum Keychain {
         q[kSecValueData as String] = try JSONEncoder().encode(k)
         q[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         let st = SecItemAdd(q as CFDictionary, nil)
-        guard st == errSecSuccess else { throw StoreError.failed("Couldn't save the Lightsail key (\(st)).") }
+        guard st == errSecSuccess else { throw StoreError.failed(String(localized: "Couldn't save the Lightsail key (\(st)).")) }
     }
 
     static func aws() -> AWSKey? {

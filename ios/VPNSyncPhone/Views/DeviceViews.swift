@@ -15,7 +15,7 @@ struct DevicesList: View {
     var body: some View {
         let list = live.allDevices
         if list.isEmpty {
-            Text(live.link == .live ? "No devices on this server yet." : "Loading devices…")
+            Text(live.link == .live ? String(localized: "No devices on this server yet.") : String(localized: "Loading devices…"))
                 .foregroundStyle(.secondary).card()
         } else {
             VStack(spacing: 0) {
@@ -30,7 +30,7 @@ struct DevicesList: View {
                                 Image(systemName: selection.contains(d.name) ? "checkmark.circle.fill" : "circle")
                                     .font(.title3).foregroundStyle(selection.contains(d.name) ? Color.accentColor : .secondary)
                                     .padding(.leading, 8)
-                                    .accessibilityLabel(selection.contains(d.name) ? "Selected" : "Not selected")
+                                    .accessibilityLabel(selection.contains(d.name) ? String(localized: "Selected") : String(localized: "Not selected"))
                             }
                             DeviceRow(device: d, live: live, showChevron: !selecting)
                         }
@@ -70,7 +70,7 @@ struct DeviceRow: View {
                     Text(n).font(.body.weight(.semibold))
                     if let p = live.usage?.paused[n] { PausedBadge(info: p) }
                 }
-                Text(live.via(n) ?? live.lastSeen(n).map { "Last seen \(relative($0))" } ?? "Not connected")
+                Text(live.via(n) ?? live.lastSeen(n).map { String(localized: "Last seen \(relative($0))") } ?? String(localized: "Not connected"))
                     .font(.caption).foregroundStyle(online ? .primary : .secondary).lineLimit(1).minimumScaleFactor(0.8)
                 usageLine(n)
             }
@@ -125,8 +125,8 @@ struct DeviceSheet: View {
                     HStack(spacing: 14) {
                         DeviceAvatar(kind: live.kind(n), online: live.isOnline(n), size: 52)
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(live.via(n) ?? "Not connected").font(.subheadline)
-                            if let info = live.devInfo[n] { Text("\(info.platform), \(info.app)").font(.caption).foregroundStyle(.secondary) }
+                            Text(live.via(n) ?? String(localized: "Not connected")).font(.subheadline)
+                            if let info = live.devInfo[n] { Text("\(clientPlatformName(info.platform)), \(info.app)").font(.caption).foregroundStyle(.secondary) }
                             if live.isOnline(n), let r = live.rates[n] {
                                 Text("↓ \(formatRate(r.down))   ↑ \(formatRate(r.up))").font(.caption).monospacedDigit().foregroundStyle(.secondary)
                             }
@@ -194,8 +194,8 @@ struct DeviceSheet: View {
                 }
             }
             if let pause { Label(pause.label, systemImage: "pause.circle.fill").foregroundStyle(.orange) }
-            Button(pause == nil ? "Pause Internet" : "Resume Internet", systemImage: pause == nil ? "pause" : "play") { setPaused(pause == nil) }
-            Button(limit == nil ? "Set Usage Limit…" : "Edit Usage Limit…", systemImage: "gauge.with.dots.needle.50percent") { editingLimit = true }
+            Button(pause == nil ? String(localized: "Pause Internet") : String(localized: "Resume Internet"), systemImage: pause == nil ? "pause" : "play") { setPaused(pause == nil) }
+            Button(limit == nil ? String(localized: "Set Usage Limit…") : String(localized: "Edit Usage Limit…"), systemImage: "gauge.with.dots.needle.50percent") { editingLimit = true }
             if limit != nil {
                 Button("Remove Limit", systemImage: "xmark.circle", role: .destructive) { clearLimit() }
             }
@@ -237,7 +237,7 @@ struct DeviceSheet: View {
             do {
                 _ = try await store.tool(server, "/usr/local/sbin/vpn-usage \(pause ? "pause" : "resume") \(device.name)")
                 await live.refreshUsage()
-                store.show(pause ? "\(device.name) is paused: connected, but no internet." : "\(device.name) is back online.")
+                store.show(pause ? String(localized: "\(device.name) is paused: connected, but no internet.") : String(localized: "\(device.name) is back online."))
             } catch { store.show(error.localizedDescription) }
         }
     }
@@ -249,7 +249,7 @@ struct DeviceSheet: View {
             do {
                 _ = try await store.tool(server, "/usr/local/sbin/vpn-usage limit \(device.name) --clear")
                 await live.refreshUsage()
-                store.show("\(device.name) has no usage limit now.")
+                store.show(String(localized: "\(device.name) has no usage limit now."))
             } catch { store.show(error.localizedDescription) }
         }
     }
@@ -262,7 +262,7 @@ struct DeviceSheet: View {
                 _ = try await store.tool(server, "/usr/local/sbin/vpn-remove-client \(device.name)", timeout: 180)
                 await live.refreshDevices()
                 await live.refreshUsage()          // its usage and limit are gone too
-                store.show("Removed \(device.name). Sync on the Mac to update its Desktop folder.")
+                store.show(String(localized: "Removed \(device.name). Sync on the Mac to update its Desktop folder."))
                 dismiss()
             } catch { store.show(error.localizedDescription) }
         }
@@ -352,7 +352,7 @@ struct LimitSheet: View {
         .presentationDetents([.medium, .large])
     }
 
-    private func limitRow(_ title: String, on: Binding<Bool>, value: Binding<String>, unit: Binding<Unit>) -> some View {
+    private func limitRow(_ title: LocalizedStringKey, on: Binding<Bool>, value: Binding<String>, unit: Binding<Unit>) -> some View {
         HStack {
             Text(title).frame(width: 78, alignment: .leading)
             Toggle(title, isOn: on).labelsHidden()
@@ -391,7 +391,7 @@ struct LimitSheet: View {
             do {
                 _ = try await store.tool(server, "/usr/local/sbin/vpn-usage limit \(device) --daily \(d) --monthly \(m) --action \(pauses ? "pause" : "alert")\(tzArg)")
                 await live.refreshUsage()
-                store.show("Saved the limit for \(device).")
+                store.show(String(localized: "Saved the limit for \(device)."))
                 dismiss()
             } catch { self.error = error.localizedDescription }
         }
@@ -420,12 +420,12 @@ struct AddDeviceSheet: View {
         let existing = Set(live.allDevices.map(\.name))
         var seen = Set<String>(), out: [String] = []
         for n in names {
-            if seen.contains(n) { out.append("\(n) is listed twice.") }
+            if seen.contains(n) { out.append(String(localized: "\(n) is listed twice.")) }
             seen.insert(n)
-            if n.range(of: #"^[A-Za-z0-9_-]{1,15}$"#, options: .regularExpression) == nil { out.append("\(n): use 1–15 letters, numbers, - or _.") }
-            else if existing.contains(n) { out.append("\(n) already exists.") }
+            if n.range(of: #"^[A-Za-z0-9_-]{1,15}$"#, options: .regularExpression) == nil { out.append(String(localized: "\(n): use 1–15 letters, numbers, - or _.")) }
+            else if existing.contains(n) { out.append(String(localized: "\(n) already exists.")) }
         }
-        if names.count > 50 { out.append("At most 50 devices at a time.") }
+        if names.count > 50 { out.append(String(localized: "At most 50 devices at a time.")) }
         return out
     }
 
@@ -439,23 +439,24 @@ struct AddDeviceSheet: View {
                         .focused($focused)
                 } footer: {
                     if let p = problems.first { Text(p).foregroundStyle(.red) }
-                    else { Text("One or more names, separated by commas, spaces or new lines. Each device gets a profile for every VPN on \(server): OpenVPN, WireGuard\(live.hasIPsec ? " and IKEv2" : "").") }
+                    else if live.hasIPsec { Text("One or more names, separated by commas, spaces or new lines. Each device gets a profile for every VPN on \(server): OpenVPN, WireGuard and IKEv2.") }
+                    else { Text("One or more names, separated by commas, spaces or new lines. Each device gets a profile for every VPN on \(server): OpenVPN, WireGuard.") }
                 }
                 Section {
                     TextField("Prefix", text: $prefix).textInputAutocapitalization(.never).autocorrectionDisabled()
                     Stepper("From \(start)", value: $start, in: 0...999)
-                    Stepper("\(count) device\(count == 1 ? "" : "s")", value: $count, in: 1...50)
+                    Stepper(count == 1 ? String(localized: "1 device") : String(localized: "\(count) devices"), value: $count, in: 1...50)
                     Button("Fill In \(prefix)\(start)…\(prefix)\(start + count - 1)") {
                         text = (start..<(start + count)).map { "\(prefix)\($0)" }.joined(separator: ", ")
                     }
                     .disabled(prefix.isEmpty)
                 } header: { Text("Or generate names") }
                 if working {
-                    HStack { ProgressView(); Text("Creating \(names.count) device\(names.count == 1 ? "" : "s")… about 10 seconds each.") }
+                    HStack { ProgressView(); Text(names.count == 1 ? String(localized: "Creating 1 device… about 10 seconds each.") : String(localized: "Creating \(names.count) devices… about 10 seconds each.")) }
                 }
                 if let error { Text(error).foregroundStyle(.red) }
             }
-            .navigationTitle(names.count > 1 ? "Add \(names.count) Devices" : "Add Device")
+            .navigationTitle(names.count > 1 ? String(localized: "Add \(names.count) Devices") : String(localized: "Add Device"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(working) }
@@ -475,8 +476,8 @@ struct AddDeviceSheet: View {
             do {
                 _ = try await store.tool(server, "/usr/local/sbin/vpn-add-client \(list.joined(separator: " "))", timeout: 120 + 60 * list.count)
                 await live.refreshDevices()
-                store.show(list.count == 1 ? "Created \(list[0]). Sync on the Mac to copy its profiles to the Desktop."
-                                           : "Created \(list.count) devices. Sync on the Mac to copy their profiles to the Desktop.")
+                store.show(list.count == 1 ? String(localized: "Created \(list[0]). Sync on the Mac to copy its profiles to the Desktop.")
+                                           : String(localized: "Created \(list.count) devices. Sync on the Mac to copy their profiles to the Desktop."))
                 dismiss()
             } catch {
                 await live.refreshDevices()        // some may have been created before the failure

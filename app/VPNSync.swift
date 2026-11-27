@@ -26,11 +26,11 @@ func isDirectory(_ url: URL) -> Bool {
 
 /// Why a device name can't be used, or nil if it's fine.
 func nameProblem(_ name: String, existing: Set<String>) -> String? {
-    if name.count > 15 { return "“\(name)” is longer than 15 characters." }
+    if name.count > 15 { return String(localized: "“\(name)” is longer than 15 characters.") }
     if !name.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) {
-        return "“\(name)”: use only letters, numbers, - and _."
+        return String(localized: "“\(name)”: use only letters, numbers, - and _.")
     }
-    if existing.contains(name) { return "“\(name)” already exists." }
+    if existing.contains(name) { return String(localized: "“\(name)” already exists.") }
     return nil
 }
 
@@ -146,7 +146,7 @@ final class Model: ObservableObject {
     static weak var shared: Model?
 
     // live progress for add/remove
-    private var progressVerb = ""
+    private var progressAdding = true
     private var progressTotal = 0
     private var progressDone = 0
 
@@ -273,10 +273,10 @@ final class Model: ObservableObject {
 
     private func run(check: Bool) async {
         guard !busy, !server.isEmpty else { return }
-        guard cliInstalled else { status = .failed("vpn-sync is not installed at \(cliURL.path)"); return }
+        guard cliInstalled else { status = .failed(String(localized: "vpn-sync is not installed at \(cliURL.path)")); return }
         let ip = manualIP.trimmingCharacters(in: .whitespaces)
-        if !ip.isEmpty && !isIPv4(ip) { status = .failed("“\(ip)” is not an IPv4 address"); return }
-        status = .working(check ? "Checking…" : "Syncing…")
+        if !ip.isEmpty && !isIPv4(ip) { status = .failed(String(localized: "“\(ip)” is not an IPv4 address")); return }
+        status = .working(check ? String(localized: "Checking…") : String(localized: "Syncing…"))
         notices = []
         let (code, output) = await runCLI((check ? ["--check"] : []) + ipArgs + [server])
         apply(output: output, code: code, check: check)
@@ -288,13 +288,17 @@ final class Model: ObservableObject {
 
     /// Adds (or removes) devices on every VPN, then syncs. Returns an error message, or nil on success.
     func changeDevices(adding: Bool, _ names: [String]) async -> String? {
-        guard !busy else { return "Another operation is still running. Try again in a moment." }
-        guard cliInstalled else { return "vpn-sync is not installed at \(cliURL.path)" }
-        guard !names.isEmpty else { return "No device names given." }
-        progressVerb = adding ? "Adding" : "Removing"
+        guard !busy else { return String(localized: "Another operation is still running. Try again in a moment.") }
+        guard cliInstalled else { return String(localized: "vpn-sync is not installed at \(cliURL.path)") }
+        guard !names.isEmpty else { return String(localized: "No device names given.") }
+        progressAdding = adding
         progressTotal = names.count
         progressDone = 0
-        status = .working("\(progressVerb) \(names.count == 1 ? names[0] : "0 of \(names.count)")…")
+        if names.count == 1 {
+            status = .working(adding ? String(localized: "Adding \(names[0])…") : String(localized: "Removing \(names[0])…"))
+        } else {
+            status = .working(adding ? String(localized: "Adding 0 of \(names.count)…") : String(localized: "Removing 0 of \(names.count)…"))
+        }
         notices = []
         let (code, output) = await runCLI([adding ? "--add" : "--remove", names.joined(separator: ",")] + ipArgs + [server])
         progressTotal = 0
@@ -306,18 +310,18 @@ final class Model: ObservableObject {
         let done = lines.filter { $0.hasPrefix(marker) }.map { String($0.dropFirst(marker.count)) }
         selection.subtract(done)
         if !done.isEmpty {
-            notices.insert("\(adding ? "Added" : "Removed") \(done.joined(separator: ", ")).", at: 0)
+            notices.insert(adding ? String(localized: "Added \(done.joined(separator: listSep)).") : String(localized: "Removed \(done.joined(separator: listSep)).")  , at: 0)
         }
         if code == 0 && done.count == names.count {
             if adding && names.count == 1 { pendingQR = devices.first { $0.name == names[0] && $0.qr != nil } }
             return nil
         }
-        if case .unreachable = status { return "Couldn't reach \(server). Press Sync Now first, or enter its IP." }
+        if case .unreachable = status { return String(localized: "Couldn't reach \(server). Press Sync Now first, or enter its IP.") }
         let keys = ["already used", "invalid", "failed", "no device named", "listed twice"]
         let reasons = lines.filter { l in l.hasPrefix("server: ") && keys.contains { l.contains($0) } }
             .map { String($0.dropFirst(8)) }
-        var msg = reasons.isEmpty ? "\(progressVerb) devices failed. See Details for the log." : reasons.joined(separator: "\n")
-        if !done.isEmpty { msg += "\n\(adding ? "Added" : "Removed") anyway: \(done.joined(separator: ", "))" }
+        var msg = reasons.isEmpty ? (adding ? String(localized: "Adding devices failed. See Details for the log.") : String(localized: "Removing devices failed. See Details for the log.")) : reasons.joined(separator: "\n")
+        if !done.isEmpty { msg += "\n" + (adding ? String(localized: "Added anyway: \(done.joined(separator: listSep))") : String(localized: "Removed anyway: \(done.joined(separator: listSep))")) }
         status = .failed(msg)
         return msg
     }
@@ -344,10 +348,11 @@ final class Model: ObservableObject {
             }
             if line.hasPrefix("would rename") || line.hasPrefix("would create") { needs = true }
             // Check compares the server's profiles with the Desktop folder
-            for (prefix, verb) in [("would add: ", "Sync would add"), ("would remove: ", "Sync would remove"),
-                                   ("would update: ", "Sync would update")] where line.hasPrefix(prefix) {
+            for (prefix, text) in [("would add: ", { (l: String) in String(localized: "Sync would add \(l).") }),
+                                   ("would remove: ", { (l: String) in String(localized: "Sync would remove \(l).") }),
+                                   ("would update: ", { (l: String) in String(localized: "Sync would update \(l).") })] where line.hasPrefix(prefix) {
                 needs = true
-                if check { notices.append("\(verb) \(line.dropFirst(prefix.count)).") }
+                if check { notices.append(text(String(line.dropFirst(prefix.count)))) }
             }
             if line.hasPrefix("! could not reach") { unreachable = true }
             if line.contains("server tools aren't installed") { status = .needsInstall; return }
@@ -358,7 +363,7 @@ final class Model: ObservableObject {
         if let ip, isIPv4(ip) { serverIP = ip }
         if code != 0 {
             status = unreachable ? .unreachable
-                : .failed(output.split(separator: "\n").last.map(String.init) ?? "vpn-sync exited with \(code)")
+                : .failed(output.split(separator: "\n").last.map(String.init) ?? String(localized: "vpn-sync exited with \(code)"))
             return
         }
         status = (check && needs) ? .needsSync : .upToDate
@@ -366,9 +371,10 @@ final class Model: ObservableObject {
 
     private func noteProgress(_ chunk: String) {
         guard progressTotal > 1 else { return }
-        let marker = progressVerb == "Adding" ? "added device: " : "removed device: "
+        let marker = progressAdding ? "added device: " : "removed device: "
         progressDone += chunk.components(separatedBy: marker).count - 1
-        status = .working("\(progressVerb) \(min(progressDone + 1, progressTotal)) of \(progressTotal)…")
+        let n = min(progressDone + 1, progressTotal)
+        status = .working(progressAdding ? String(localized: "Adding \(n) of \(progressTotal)…") : String(localized: "Removing \(n) of \(progressTotal)…"))
     }
 
     /// Appends one line per command to ~/.config/vpn-sync/history.log.
@@ -453,8 +459,8 @@ final class Model: ObservableObject {
                 .first(where: { $0.hasPrefix("IP changed ") }) {
                 // "IP changed A -> B: re-import …"
                 let parts = line.dropFirst("IP changed ".count).components(separatedBy: ":")[0].components(separatedBy: " -> ")
-                Notifier.shared.postInfo(id: "\(s)/ip", title: "\(s) has a new IP",
-                    body: "Now \(parts.last ?? "?") (was \(parts.first ?? "?")). Profiles on the Desktop are updated; re-import them on phones and TVs.")
+                Notifier.shared.postInfo(id: "\(s)/ip", title: String(localized: "\(s) has a new IP"),
+                    body: String(localized: "Now \(parts.last ?? "?") (was \(parts.first ?? "?")). Profiles on the Desktop are updated; re-import them on phones and TVs."))
             }
             if s == server { await reloadAsync(); serverIP = lastIP; status = .upToDate }
             restartWatcher(s)
@@ -465,9 +471,9 @@ final class Model: ObservableObject {
             unreachableNotified.insert(s)
             let (_, st) = await runCLI(["aws", "status"], quiet: true)
             let hasKey = !st.contains("KEY=none") || st.contains("AWS_CLI=configured")
-            Notifier.shared.postInfo(id: "\(s)/down", title: "\(s) is unreachable",
-                body: hasKey ? "Lightsail didn't give a reachable address; the server may be stopped. VPN Sync keeps trying."
-                             : "If it was stopped and started, its IP may have changed. Add Lightsail access in VPN Sync Settings so it's found automatically, or enter the new IP in VPN Sync.")
+            Notifier.shared.postInfo(id: "\(s)/down", title: String(localized: "\(s) is unreachable"),
+                body: hasKey ? String(localized: "Lightsail didn't give a reachable address; the server may be stopped. VPN Sync keeps trying.")
+                             : String(localized: "If it was stopped and started, its IP may have changed. Add Lightsail access in VPN Sync Settings so it's found automatically, or enter the new IP in VPN Sync."))
         }
     }
 
@@ -477,7 +483,7 @@ final class Model: ObservableObject {
         // IKEv2: macOS installs .mobileconfig profiles itself (System Settings → Profiles asks to install)
         if url.pathExtension == "mobileconfig" {
             NSWorkspace.shared.open(url)
-            notices = ["Open System Settings → General → Device Management (Profiles) and install “\(url.deletingPathExtension().lastPathComponent)”. Then connect from System Settings → VPN."]
+            notices = [String(localized: "Open System Settings → General → Device Management (Profiles) and install “\(url.deletingPathExtension().lastPathComponent)”. Then connect from System Settings → VPN.")]
             return
         }
         let candidates: [String] = url.pathExtension == "ovpn"
@@ -499,13 +505,13 @@ struct StatusPill: View {
     var body: some View {
         let (text, color, icon): (String, Color, String) = {
             switch status {
-            case .idle: return ("Not checked", .secondary, "circle-dashed")
+            case .idle: return (String(localized: "Not checked"), .secondary, "circle-dashed")
             case .working(let t): return (t, .blue, "refresh-cw")
-            case .upToDate: return ("Up to date", .green, "circle-check")
-            case .needsSync: return ("Sync needed", .orange, "circle-alert")
-            case .unreachable: return ("Unreachable", .red, "wifi-off")
-            case .needsInstall: return ("Setup needed", .orange, "wrench")
-            case .failed: return ("Error", .red, "octagon-x")
+            case .upToDate: return (String(localized: "Up to date"), .green, "circle-check")
+            case .needsSync: return (String(localized: "Sync needed"), .orange, "circle-alert")
+            case .unreachable: return (String(localized: "Unreachable"), .red, "wifi-off")
+            case .needsInstall: return (String(localized: "Setup needed"), .orange, "wrench")
+            case .failed: return (String(localized: "Error"), .red, "octagon-x")
             }
         }()
         Label(text, lucide: icon)
@@ -541,10 +547,10 @@ struct DeviceRow: View {
     /// "iPhone, OpenVPN Connect 3.7.4" / "TV (guessed from the name)"
     private var kindLine: String {
         let k = m.deviceKind(device.name)
-        if let app = m.deviceApp(device.name), !m.deviceKindIsManual(device.name) { return "\(k.label), \(app)" }
+        if let app = m.deviceApp(device.name), !m.deviceKindIsManual(device.name) { return String(localized: "\(k.label), \(app)") }
         if m.deviceKindIsManual(device.name) { return k.label }
-        if k == .unknown { return "Device type unknown" }
-        return m.live?.devInfo[device.name] == nil ? "\(k.label) (guessed from the name)" : k.label
+        if k == .unknown { return String(localized: "Device type unknown") }
+        return m.live?.devInfo[device.name] == nil ? String(localized: "\(k.label) (guessed from the name)") : k.label
     }
 
     /// Most devices have a profile for every VPN on the server; only the exceptions get a badge:
@@ -556,11 +562,11 @@ struct DeviceRow: View {
         let offered = has.filter { kind in m.devices.contains { d in
             kind.0 == "OpenVPN" ? d.ovpn != nil : kind.0 == "WireGuard" ? d.wg != nil : d.ike != nil } }
         let present = offered.filter { $0.1 }
-        if present.isEmpty { return ("no profile file", .secondary) }
+        if present.isEmpty { return (String(localized: "no profile file"), .secondary) }
         if present.count == offered.count { return nil }
-        if present.count == 1 { return ("\(present[0].0) only", present[0].2) }
-        let missing = offered.filter { !$0.1 }.map(\.0).joined(separator: ", ")
-        return ("no \(missing)", .secondary)
+        if present.count == 1 { return (String(localized: "\(present[0].0) only"), present[0].2) }
+        let missing = offered.filter { !$0.1 }.map(\.0).joined(separator: listSep)
+        return (String(localized: "no \(missing)"), .secondary)
     }
 
     /// What Automatic would pick, ignoring the user's choice.
@@ -757,11 +763,11 @@ struct BatchAddSheet: View {
     private var problems: [String] {
         var seen = Set<String>(), out: [String] = []
         for n in names {
-            if seen.contains(n) { out.append("“\(n)” is listed twice.") }
+            if seen.contains(n) { out.append(String(localized: "“\(n)” is listed twice.")) }
             seen.insert(n)
             if let p = nameProblem(n, existing: m.deviceNames) { out.append(p) }
         }
-        if names.count > 50 { out.append("At most 50 devices at a time.") }
+        if names.count > 50 { out.append(String(localized: "At most 50 devices at a time.")) }
         return out
     }
 
@@ -798,7 +804,7 @@ struct BatchAddSheet: View {
                 .glassPanel(14)
                 .disabled(working)
 
-            Text(names.isEmpty ? "No names yet." : "\(names.count) device\(names.count == 1 ? "" : "s"): \(names.prefix(12).joined(separator: ", "))\(names.count > 12 ? ", …" : "")")
+            Text(namesSummary)
                 .font(.caption).foregroundStyle(.secondary)
             ForEach(Array(problems.prefix(4).enumerated()), id: \.offset) { _, p in
                 Text(p).font(.caption).foregroundStyle(.red)
@@ -812,7 +818,7 @@ struct BatchAddSheet: View {
                 }
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).disabled(working)
-                Button("Create \(names.count) Device\(names.count == 1 ? "" : "s")", action: create)
+                Button(names.count == 1 ? String(localized: "Create 1 Device") : String(localized: "Create \(names.count) Devices"), action: create)
                     .keyboardShortcut(.defaultAction)
                     .glassButton(prominent: true)
                     .disabled(working || names.isEmpty || !problems.isEmpty)
@@ -823,10 +829,16 @@ struct BatchAddSheet: View {
         .glassSheet()
     }
 
+    private var namesSummary: String {
+        if names.isEmpty { return String(localized: "No names yet.") }
+        let list = names.prefix(12).joined(separator: listSep) + (names.count > 12 ? ", …" : "")
+        return names.count == 1 ? String(localized: "1 device: \(list)") : String(localized: "\(names.count) devices: \(list)")
+    }
+
     private var generated: [String] { (0..<count).map { "\(prefix)\(start + $0)" } }
     private var previewOfGenerator: String {
         let g = generated
-        return g.count <= 3 ? g.joined(separator: ", ") : "\(g[0]), \(g[1]), … \(g[g.count - 1])"
+        return g.count <= 3 ? g.joined(separator: listSep) : "\(g[0]), \(g[1]), … \(g[g.count - 1])"
     }
 
     private func fill() {
@@ -944,7 +956,7 @@ struct ContentView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: { names in
-            Text("\(names.joined(separator: ", ")) will stop working right away on both OpenVPN and WireGuard. Revoking the OpenVPN certificate can't be undone; the profile files are kept in a backup on the server.")
+            Text("\(names.joined(separator: listSep)) will stop working right away on both OpenVPN and WireGuard. Revoking the OpenVPN certificate can't be undone; the profile files are kept in a backup on the server.")
         }
     }
 
@@ -974,33 +986,33 @@ struct ContentView: View {
 
     private var serviceTitle: String {
         guard let a = m.confirmService else { return "" }
-        if a.action == "reboot" { return "Reboot \(a.server)?" }
-        if a.vpn == "instance" { return "Stop the server \(a.server)?" }
-        return "\(a.action == "stop" ? "Stop" : "Restart") \(a.vpnLabel) on \(a.server)?"
+        if a.action == "reboot" { return String(localized: "Reboot \(a.server)?") }
+        if a.vpn == "instance" { return String(localized: "Stop the server \(a.server)?") }
+        return a.action == "stop" ? String(localized: "Stop \(a.vpnLabel) on \(a.server)?") : String(localized: "Restart \(a.vpnLabel) on \(a.server)?")
     }
 
     private func serviceMessage(_ a: ServiceAction) -> String {
-        let mac = "If this Mac is connected through it, it loses internet until the VPN is back (or you disconnect the VPN app)."
+        let mac = String(localized: "If this Mac is connected through it, it loses internet until the VPN is back (or you disconnect the VPN app).")
         if a.vpn == "instance" {
             let st = m.instanceStates[a.server]
             let ip = st?.staticIP == true
-                ? "Its static IP stays the same."
-                : "Without a static IP it gets a new address when it starts: VPN Sync finds it and updates the profiles, but phones and TVs need their WireGuard and IKEv2 profiles again. A Lightsail static IP avoids this."
-            return "The Lightsail instance is shut down: every device is disconnected, and nothing reconnects until you start it again (Power → Start Server). \(ip) \(mac)"
+                ? String(localized: "Its static IP stays the same.")
+                : String(localized: "Without a static IP it gets a new address when it starts: VPN Sync finds it and updates the profiles, but phones and TVs need their WireGuard and IKEv2 profiles again. A Lightsail static IP avoids this.")
+            return String(localized: "The Lightsail instance is shut down: every device is disconnected, and nothing reconnects until you start it again (Power → Start Server). \(ip) \(mac)")
         }
         switch a.action {
         case "reboot":
-            return "Every device on \(a.server) is disconnected for about a minute while it restarts. The IP address stays the same. \(mac)"
+            return String(localized: "Every device on \(a.server) is disconnected for about a minute while it restarts. The IP address stays the same. \(mac)")
         case "stop":
-            return "Every device connected through \(a.vpnLabel) is disconnected and can't reconnect until you start it again. It also starts again automatically if the server reboots. \(mac)"
+            return String(localized: "Every device connected through \(a.vpnLabel) is disconnected and can't reconnect until you start it again. It also starts again automatically if the server reboots. \(mac)")
         default:
-            return "Devices connected through \(a.vpnLabel) drop for a few seconds and then reconnect on their own."
+            return String(localized: "Devices connected through \(a.vpnLabel) drop for a few seconds and then reconnect on their own.")
         }
     }
 
     private var removalTitle: String {
         guard let names = m.confirmRemoval else { return "" }
-        return names.count == 1 ? "Remove “\(names[0])”?" : "Remove \(names.count) devices?"
+        return names.count == 1 ? String(localized: "Remove “\(names[0])”?") : String(localized: "Remove \(names.count) devices?")
     }
 
     private var header: some View {
@@ -1260,13 +1272,13 @@ struct ContentView: View {
             let near = u.limits.filter { n, l in
                 u.paused[n] == nil && (l.tightest(u.usage[n] ?? DeviceUsage())?.fraction ?? 0) >= (usageWarnFraction ?? .infinity)
             }.count
-            let parts = [u.limits.isEmpty ? nil : "\(u.limits.count) usage limit\(u.limits.count == 1 ? "" : "s")",
-                         u.paused.isEmpty ? nil : "\(u.paused.count) paused",
-                         near == 0 ? nil : "\(near) at \(m.warnAt)% or more"].compactMap { $0 }
+            let parts = [u.limits.isEmpty ? nil : (u.limits.count == 1 ? String(localized: "1 usage limit") : String(localized: "\(u.limits.count) usage limits")),
+                         u.paused.isEmpty ? nil : String(localized: "\(u.paused.count) paused"),
+                         near == 0 ? nil : String(localized: "\(near) at \(m.warnAt)% or more")].compactMap { $0 }
             HStack(spacing: 8) {
                 LucideIcon("gauge", size: 13)
                     .foregroundStyle(u.paused.isEmpty && near == 0 ? Color.secondary : Color.orange)
-                Text(parts.joined(separator: ", ")).font(.callout).monospacedDigit()
+                Text(parts.joined(separator: clauseSep)).font(.callout).monospacedDigit()
                 Spacer(minLength: 8)
                 Button(limitedOnly ? "Show All Devices" : "Show Only These") {
                     withAnimation(.snappy) { limitedOnly.toggle() }

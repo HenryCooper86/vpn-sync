@@ -28,7 +28,7 @@ struct Theme: Identifiable, Equatable {
 enum AppearanceMode: String, CaseIterable, Identifiable {
     case auto, light, dark
     var id: String { rawValue }
-    var label: String { self == .auto ? "Automatic" : self == .light ? "Light" : "Dark" }
+    var label: String { self == .auto ? String(localized: "Automatic") : self == .light ? String(localized: "Light") : String(localized: "Dark") }
 }
 
 extension Color {
@@ -258,7 +258,7 @@ struct SignalOrb: View {
             if let o = old, let n = new, n > o, !reduceMotion { ripple += 1 }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(count.map { "\($0) devices online" } ?? "Live monitoring off")
+        .accessibilityLabel(count.map { String(localized: "\($0) devices online") } ?? String(localized: "Live monitoring off"))
     }
 }
 

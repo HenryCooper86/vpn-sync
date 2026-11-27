@@ -67,7 +67,7 @@ struct DeviceAvatar: View {
                 .frame(width: size * 0.3, height: size * 0.3)
                 .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
         }
-        .accessibilityLabel(online ? "Online" : "Offline")
+        .accessibilityLabel(online ? String(localized: "Online") : String(localized: "Offline"))
     }
 }
 
@@ -98,7 +98,7 @@ struct UsageMeter: View {
         .frame(width: width, height: 5)
         .accessibilityElement()
         .accessibilityLabel("Usage")
-        .accessibilityValue("\(Int(fraction * 100)) percent of the limit")
+        .accessibilityValue(String(localized: "\(Int(fraction * 100)) percent of the limit"))
     }
 }
 

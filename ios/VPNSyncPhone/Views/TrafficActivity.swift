@@ -25,8 +25,8 @@ struct TrafficSection: View {
                 Text("last 15 minutes").font(.caption).foregroundStyle(.secondary)
             }
             HStack(spacing: 16) {
-                legend(Palette.download, "Download", last.map { formatRate($0.down) } ?? "–")
-                legend(Palette.upload, "Upload", last.map { formatRate($0.up) } ?? "–")
+                legend(Palette.download, String(localized: "Download"), last.map { formatRate($0.down) } ?? "–")
+                legend(Palette.upload, String(localized: "Upload"), last.map { formatRate($0.up) } ?? "–")
             }
             if live.history.count > 1 {
                 Chart {
@@ -92,7 +92,7 @@ struct TrafficSection: View {
         return VStack(alignment: .leading, spacing: 12) {
             Text("Data this month").font(.headline)
             if rows.isEmpty {
-                Text(live.usage == nil ? "Waiting for the server's usage report…" : "No data yet this month.")
+                Text(live.usage == nil ? String(localized: "Waiting for the server's usage report…") : String(localized: "No data yet this month."))
                     .font(.caption).foregroundStyle(.secondary)
             }
             ForEach(rows, id: \.key) { n, u in
@@ -172,8 +172,8 @@ struct ActivitySection: View {
             case .conn(let e):
                 StatusDot(color: e.connected ? Palette.online : .secondary, on: e.connected, size: 7)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(Text(e.device).bold()) \(e.connected ? "connected" : "disconnected")")
-                    Text("\(e.vpn)\(e.ip == "-" ? "" : " from \(e.ip)")").font(.caption).foregroundStyle(.secondary)
+                    Text("\(Text(e.device).bold()) \(e.connected ? String(localized: "connected") : String(localized: "disconnected"))")
+                    Text(e.ip == "-" ? e.vpn : String(localized: "\(e.vpn) from \(e.ip)")).font(.caption).foregroundStyle(.secondary)
                 }
             case .limit(let e):
                 Image(systemName: icon(e.kind)).font(.caption).foregroundStyle(color(e.kind))

@@ -54,10 +54,59 @@ struct AppearanceSettings: View {
             Text("Automatic follows your Mac's light or dark setting. Buttons use your macOS accent colour.")
                 .font(.callout).foregroundStyle(.secondary)
             ThemePicker()
+            Divider().padding(.vertical, 4)
+            LanguagePicker()
         }
         .padding(22)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: 240, alignment: .top)
+        .frame(height: 330, alignment: .top)
+    }
+}
+
+/// The app's own language, like System Settings → General → Language & Region → Applications:
+/// "System" follows the Mac; English or Simplified Chinese overrides it for VPN Sync only.
+/// macOS reads it at launch, so changing it offers a restart.
+struct LanguagePicker: View {
+    @State private var choice = LanguagePicker.current()
+    @State private var changed = false
+    private static let key = "AppleLanguages"
+    static func current() -> String {
+        let own = UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")?[key] as? [String]
+        switch own?.first {
+        case let l? where l.hasPrefix("zh"): return "zh-Hans"
+        case let l? where l.hasPrefix("en"): return "en"
+        default: return "system"
+        }
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Language", selection: $choice) {
+                Text("System").tag("system")
+                Text(verbatim: "English").tag("en")
+                Text(verbatim: "简体中文").tag("zh-Hans")
+            }
+            .pickerStyle(.segmented)
+            .fixedSize()
+            .onChange(of: choice) { _, v in
+                if v == "system" { UserDefaults.standard.removeObject(forKey: Self.key) }
+                else { UserDefaults.standard.set([v], forKey: Self.key) }
+                changed = true
+            }
+            if changed {
+                HStack(spacing: 10) {
+                    Text("Restart VPN Sync to use the new language.").font(.callout).foregroundStyle(.secondary)
+                    Button("Restart Now") { relaunch() }
+                }
+            }
+        }
+    }
+    private func relaunch() {
+        let path = Bundle.main.bundleURL.path
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "sleep 1; /usr/bin/open \"$0\"", path]
+        try? p.run()
+        NSApp.terminate(nil)
     }
 }
 
@@ -71,7 +120,7 @@ struct GeneralSettings: View {
                 Text("Flags show which country each device connects from. The lookup uses a local table (ip-location-db, public domain, updated daily upstream), so no address is sent anywhere. VPN Sync fetches a fresh copy automatically every month.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    Text(geoStatus.isEmpty ? (GeoDB.shared.available ? "Table installed" : "Table not downloaded yet") : geoStatus)
+                    Text(geoStatus.isEmpty ? (GeoDB.shared.available ? String(localized: "Table installed") : String(localized: "Table not downloaded yet")) : geoStatus)
                         .font(.callout).foregroundStyle(.secondary)
                     Spacer()
                     if updating { ProgressView().controlSize(.small) }
@@ -80,7 +129,7 @@ struct GeneralSettings: View {
                         Task {
                             let (code, out) = await m.runCLI(["geo", "update"], quiet: true)
                             updating = false
-                            geoStatus = code == 0 ? "Updated" : lastLines(out, 1).replacingOccurrences(of: "vpn-sync: ", with: "")
+                            geoStatus = code == 0 ? String(localized: "Updated") : lastLines(out, 1).replacingOccurrences(of: "vpn-sync: ", with: "")
                             if code == 0 { GeoDB.shared.load { m.objectWillChange.send() } }
                         }
                     }
@@ -218,7 +267,7 @@ struct LimitsSettings: View {
                     Text(n).font(.system(.body, design: .rounded).weight(.semibold))
                     if let p = u.paused[n] { PausedBadge(info: p) }
                 }
-                Text(limit?.summary ?? "No limit, paused by you")
+                Text(limit?.summary ?? String(localized: "No limit, paused by you"))
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 8)
@@ -337,10 +386,10 @@ struct PhoneSettings: View {
 
     private func exported(_ s: String) throws -> ExportedServer {
         func v(_ k: String) -> String? { configValue(k, server: s).flatMap { $0.isEmpty ? nil : $0 } }
-        guard let host = v("HOST"), let keyPath = v("SSH_KEY") else { throw ExportError(errorDescription: "incomplete settings") }
+        guard let host = v("HOST"), let keyPath = v("SSH_KEY") else { throw ExportError(errorDescription: String(localized: "incomplete settings")) }
         let path = keyPath.replacingOccurrences(of: "$HOME", with: NSHomeDirectory())
             .replacingOccurrences(of: "~", with: NSHomeDirectory())
-        guard let key = try? String(contentsOfFile: path, encoding: .utf8) else { throw ExportError(errorDescription: "key file not found") }
+        guard let key = try? String(contentsOfFile: path, encoding: .utf8) else { throw ExportError(errorDescription: String(localized: "key file not found")) }
         do { _ = try OpenSSHKey.ed25519(fromPEM: key) } catch { throw ExportError(errorDescription: error.localizedDescription) }
         let alias = v("HOST_ALIAS") ?? s.lowercased()
         let known = (try? String(contentsOf: configDir.appendingPathComponent("known_hosts"), encoding: .utf8)) ?? ""
@@ -350,7 +399,7 @@ struct PhoneSettings: View {
             let names = f[0].split(separator: ",").map { $0.replacingOccurrences(of: "[", with: "").components(separatedBy: "]:")[0] }
             return names.contains(alias) ? "\(f[1]) \(f[2])" : nil
         }.first
-        guard let pin else { throw ExportError(errorDescription: "no Ed25519 host key pinned") }
+        guard let pin else { throw ExportError(errorDescription: String(localized: "no Ed25519 host key pinned")) }
         let last = (try? String(contentsOf: configDir.appendingPathComponent("\(s).last-ip"), encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return ExportedServer(name: s, host: host, user: v("SSH_USER") ?? "ubuntu", port: Int(v("SSH_PORT") ?? "22") ?? 22,
@@ -373,7 +422,7 @@ struct PhoneSettings: View {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
             passphrase = phrase; file = url
         } catch {
-            self.error = "Not exported: \(error.localizedDescription)"
+            self.error = String(localized: "Not exported: \(error.localizedDescription)")
         }
     }
 }
@@ -386,6 +435,7 @@ struct LightsailSettings: View {
     @State private var message: (text: String, ok: Bool)?
     @State private var working = false
     @State private var tests: [String: String] = [:]
+    @State private var testOK: Set<String> = []
 
     private var lightsailServers: [String] {
         m.servers.filter { !(configValue("LIGHTSAIL_REGION", server: $0) ?? "").isEmpty }
@@ -423,7 +473,7 @@ struct LightsailSettings: View {
                         HStack {
                             Text(s)
                             Spacer()
-                            if let r = tests[s] { Text(r).font(.callout).foregroundStyle(r.hasPrefix("Current IP") ? .green : .red) }
+                            if let r = tests[s] { Text(r).font(.callout).foregroundStyle(testOK.contains(s) ? .green : .red) }
                             Button("Test") { Task { await test(s) } }.disabled(working || savedKey == nil)
                         }
                     }
@@ -473,7 +523,7 @@ struct LightsailSettings: View {
         secret = ""
         if code == 0 {
             keyID = ""
-            message = ("Saved. Use Test to check it can see your servers.", true)
+            message = (String(localized: "Saved. Use Test to check it can see your servers."), true)
         } else {
             message = (lastLines(out, 1).replacingOccurrences(of: "vpn-sync: ", with: ""), false)
         }
@@ -483,8 +533,8 @@ struct LightsailSettings: View {
     private func removeKey() async {
         working = true; defer { working = false }
         _ = await m.runCLI(["aws", "remove"], quiet: true)
-        tests = [:]
-        message = ("Key removed from the Keychain.", true)
+        tests = [:]; testOK = []
+        message = (String(localized: "Key removed from the Keychain."), true)
         await refresh()
     }
 
@@ -492,11 +542,11 @@ struct LightsailSettings: View {
         working = true; defer { working = false }
         let (code, out) = await m.runCLI(["aws", "ip", s], quiet: true)
         if code == 0, let ip = parseKV(out)["IP"] {
-            tests[s] = "Current IP \(ip)"
+            tests[s] = String(localized: "Current IP \(ip)"); testOK.insert(s)
         } else {
             let reason = out.split(separator: "\n").first { $0.hasPrefix("lightsail:") }
                 .map { String($0.dropFirst("lightsail: ".count)) } ?? lastLines(out, 1)
-            tests[s] = reason.isEmpty ? "Lookup failed" : reason
+            tests[s] = reason.isEmpty ? String(localized: "Lookup failed") : reason; testOK.remove(s)
         }
     }
 }

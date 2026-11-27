@@ -23,7 +23,7 @@ extension Array where Element == ServerPort {
         guard !mine.isEmpty else { return nil }
         return Dictionary(grouping: mine, by: \.proto).sorted { $0.key < $1.key }
             .map { "\($0.key.uppercased()) " + $0.value.map { String($0.port) }.joined(separator: ", ") }
-            .joined(separator: ", ")
+            .joined(separator: clauseSep)
     }
 }
 
@@ -69,7 +69,7 @@ struct ServiceAction: Identifiable, Equatable {
         case "openvpn": return "OpenVPN"
         case "wireguard": return "WireGuard"
         case "ipsec": return "IPsec"
-        default: return "all VPNs"
+        default: return String(localized: "all VPNs")
         }
     }
 }

@@ -11,9 +11,9 @@ struct ProfileFile: Identifiable, Hashable {
         switch url.pathExtension {
         case "conf": return "WireGuard"
         case "ovpn": return "OpenVPN"
-        case "mobileconfig": return "IKEv2 for iPhone, iPad and Mac"
-        case "sswan": return "IKEv2 for Android (strongSwan)"
-        case "p12": return "IKEv2 for Windows"
+        case "mobileconfig": return String(localized: "IKEv2 for iPhone, iPad and Mac")
+        case "sswan": return String(localized: "IKEv2 for Android (strongSwan)")
+        case "p12": return String(localized: "IKEv2 for Windows")
         default: return url.pathExtension
         }
     }
@@ -41,7 +41,7 @@ enum Profiles {
             files = DemoData.profiles(device, server: server).map { ($0.file, Data($0.text.utf8)) }
         } else {
             let r = try await store.run(server, "/usr/local/sbin/vpn-export-profiles --device \(device)", timeout: 60)
-            guard r.code == 0 else { throw StoreError.failed(r.stderr.isEmpty ? "Couldn't get \(device)'s profiles." : r.stderr) }
+            guard r.code == 0 else { throw StoreError.failed(r.stderr.isEmpty ? String(localized: "Couldn't get \(device)'s profiles.") : r.stderr) }
             files = try untar(r.stdout)
         }
         var out: [ProfileFile] = []
@@ -76,7 +76,7 @@ enum Profiles {
             let size = Int(field(124, 12).trimmingCharacters(in: .whitespaces), radix: 8) ?? 0
             let type = d[i + 156]
             let start = i + 512, end = start + size
-            guard end <= d.endIndex else { throw StoreError.failed("The profiles came back incomplete.") }
+            guard end <= d.endIndex else { throw StoreError.failed(String(localized: "The profiles came back incomplete.")) }
             let body = d.subdata(in: start..<end)
             switch type {
             case UInt8(ascii: "L"): longName = String(decoding: body.prefix { $0 != 0 }, as: UTF8.self)

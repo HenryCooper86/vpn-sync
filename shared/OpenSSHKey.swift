@@ -9,10 +9,10 @@ enum SSHKeyError: LocalizedError {
     case notOpenSSH, encrypted, notEd25519(String), malformed
     var errorDescription: String? {
         switch self {
-        case .notOpenSSH: return "The key isn't in OpenSSH format."
-        case .encrypted: return "The key has a passphrase; use a key without one."
-        case .notEd25519(let t): return "Only Ed25519 keys are supported (this one is \(t))."
-        case .malformed: return "The key file is damaged."
+        case .notOpenSSH: String(localized: "The key isn't in OpenSSH format.")
+        case .encrypted: String(localized: "The key has a passphrase; use a key without one.")
+        case .notEd25519(let t): String(localized: "Only Ed25519 keys are supported (this one is \(t)).")
+        case .malformed: String(localized: "The key file is damaged.")
         }
     }
 }

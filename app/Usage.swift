@@ -25,9 +25,9 @@ extension Model {
     /// "1 paused, 2 at 80% or more", or nil when nothing needs attention.
     var limitAttentionText: String? {
         let a = limitAttention
-        let parts = [a.paused == 0 ? nil : "\(a.paused) paused",
-                     a.near == 0 ? nil : "\(a.near) at \(warnAt)% or more"].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: ", ")
+        let parts = [a.paused == 0 ? nil : String(localized: "\(a.paused) paused"),
+                     a.near == 0 ? nil : String(localized: "\(a.near) at \(warnAt)% or more")].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: clauseSep)
     }
 
     /// Menu bar panel opened with Live off: fetch reports older than 5 minutes.
@@ -73,13 +73,13 @@ extension Model {
 
     func setPaused(_ name: String, _ pause: Bool, server: String? = nil) async {
         let s = server ?? self.server
-        let (code, out) = await cli([pause ? "pause" : "resume", s, name], label: "\(pause ? "Pausing" : "Resuming") \(name)…")
+        let (code, out) = await cli([pause ? "pause" : "resume", s, name], label: pause ? String(localized: "Pausing \(name)…") : String(localized: "Resuming \(name)…"))
         if code == 0 {
-            notices = [pause ? "\(name) is paused: it stays connected but gets no internet until you resume it."
-                             : "\(name) is back online."]
+            notices = [pause ? String(localized: "\(name) is paused: it stays connected but gets no internet until you resume it.")
+                             : String(localized: "\(name) is back online.")]
             status = .upToDate
         } else {
-            status = .failed("\(pause ? "Pause" : "Resume") failed: \(lastLines(out, 2))")
+            status = .failed(pause ? String(localized: "Pause failed: \(lastLines(out, 2))") : String(localized: "Resume failed: \(lastLines(out, 2))"))
         }
         await refreshUsage(s)
     }
@@ -92,7 +92,7 @@ extension Model {
         } else {
             args.append("--clear")
         }
-        let (code, out) = await cli(args, label: limit == nil ? "Removing the limit…" : "Saving the limit…")
+        let (code, out) = await cli(args, label: limit == nil ? String(localized: "Removing the limit…") : String(localized: "Saving the limit…"))
         await refreshUsage(s)
         if code != 0 { return lastLines(out, 2) }
         status = .upToDate
@@ -119,18 +119,26 @@ extension Model {
                 // 100% replaces the warning of the same period
                 if level == 100, usageWarnAt > 0 { sent.append(key.replacingOccurrences(of: "/100", with: "/\(usageWarnAt)")) }
                 guard limitAlerts else { continue }
-                let what = period == "day" ? "daily" : "monthly"
-                let span = period == "day" ? "today" : "this month"
+                let isDay = period == "day"
                 let title: String, body: String
                 if level == 100 {
-                    title = "\(name) reached its \(what) limit"
-                    body = limit.pauses
-                        ? "\(formatBytes(value)) used \(span) on \(s). Its internet is paused until \(period == "day" ? "midnight" : "the 1st"); you can resume it in VPN Sync."
-                        : "\(formatBytes(value)) of \(formatBytes(cap)) used \(span) on \(s)."
+                    title = isDay ? String(localized: "\(name) reached its daily limit") : String(localized: "\(name) reached its monthly limit")
+                    if limit.pauses {
+                        body = isDay
+                            ? String(localized: "\(formatBytes(value)) used today on \(s). Its internet is paused until midnight; you can resume it in VPN Sync.")
+                            : String(localized: "\(formatBytes(value)) used this month on \(s). Its internet is paused until the 1st; you can resume it in VPN Sync.")
+                    } else {
+                        body = isDay
+                            ? String(localized: "\(formatBytes(value)) of \(formatBytes(cap)) used today on \(s).")
+                            : String(localized: "\(formatBytes(value)) of \(formatBytes(cap)) used this month on \(s).")
+                    }
                 } else {
-                    title = "\(name) used \(Int(pct * 100))% of its \(what) limit"
-                    body = "\(formatBytes(value)) of \(formatBytes(cap)) \(span) on \(s)."
-                        + (limit.pauses ? " It will be paused at 100%." : "")
+                    let pctInt = Int(pct * 100)
+                    title = isDay ? String(localized: "\(name) used \(pctInt)% of its daily limit") : String(localized: "\(name) used \(pctInt)% of its monthly limit")
+                    let base = isDay
+                        ? String(localized: "\(formatBytes(value)) of \(formatBytes(cap)) today on \(s).")
+                        : String(localized: "\(formatBytes(value)) of \(formatBytes(cap)) this month on \(s).")
+                    body = limit.pauses ? base + " " + String(localized: "It will be paused at 100%.") : base
                 }
                 Notifier.shared.postInfo(id: "\(s)/usage/\(name)/\(period)", title: title, body: body)
             }
@@ -166,7 +174,7 @@ struct UsageLine: View {
     }
 
     private func summary(_ u: DeviceUsage) -> String {
-        "\(formatBytes(u.today)) today, \(formatBytes(u.month)) this month"
+        String(localized: "\(formatBytes(u.today)) today, \(formatBytes(u.month)) this month")
     }
 }
 
@@ -292,8 +300,8 @@ struct LimitSheet: View {
     enum Unit: String, CaseIterable, Identifiable { case mb = "MB", gb = "GB"; var id: String { rawValue } }
 
     private var alertText: String {
-        guard m.limitAlerts else { return "Notifications for limits are off (Settings → Limits)." }
-        return m.warnAt > 0 ? "You're notified at \(m.warnAt)% and 100%." : "You're notified at 100%."
+        guard m.limitAlerts else { return String(localized: "Notifications for limits are off (Settings → Limits).") }
+        return m.warnAt > 0 ? String(localized: "You're notified at \(m.warnAt)% and 100%.") : String(localized: "You're notified at 100%.")
     }
 
     @State private var dailyOn = false
@@ -315,9 +323,9 @@ struct LimitSheet: View {
         return Int64(d * (u == .gb ? 1_073_741_824 : 1_048_576))
     }
     private var problem: String? {
-        if !dailyOn && !monthlyOn { return "Turn on a daily or a monthly limit." }
-        if dailyOn && bytes(dailyValue, dailyUnit) == nil { return "Enter the daily limit as a number, e.g. 2 or 1.5." }
-        if monthlyOn && bytes(monthlyValue, monthlyUnit) == nil { return "Enter the monthly limit as a number, e.g. 50." }
+        if !dailyOn && !monthlyOn { return String(localized: "Turn on a daily or a monthly limit.") }
+        if dailyOn && bytes(dailyValue, dailyUnit) == nil { return String(localized: "Enter the daily limit as a number, e.g. 2 or 1.5.") }
+        if monthlyOn && bytes(monthlyValue, monthlyUnit) == nil { return String(localized: "Enter the monthly limit as a number, e.g. 50.") }
         return nil
     }
 
@@ -332,8 +340,8 @@ struct LimitSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 10) {
-                limitRow("Daily limit", on: $dailyOn, value: $dailyValue, unit: $dailyUnit, used: used.today)
-                limitRow("Monthly limit", on: $monthlyOn, value: $monthlyValue, unit: $monthlyUnit, used: used.month)
+                limitRow(String(localized: "Daily limit"), on: $dailyOn, value: $dailyValue, unit: $dailyUnit, used: used.today)
+                limitRow(String(localized: "Monthly limit"), on: $monthlyOn, value: $monthlyValue, unit: $monthlyUnit, used: used.month)
             }
             .padding(14)
             .glassPanel(16)
