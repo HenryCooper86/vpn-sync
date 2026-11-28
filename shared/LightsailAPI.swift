@@ -1,6 +1,7 @@
 // Shared by the Mac and iPhone apps (Foundation, CryptoKit).
-// AWS Signature Version 4 and the three Lightsail calls VPN Sync uses: GetInstance (state and
-// IP), StopInstance and StartInstance.
+// AWS Signature Version 4 and the Lightsail calls VPN Sync uses: GetInstance (state and IP),
+// StopInstance, StartInstance, and GetInstancePortStates / OpenInstancePublicPorts /
+// CloseInstancePublicPorts (the firewall: a stopped server's VPN ports are closed).
 import Foundation
 import CryptoKit
 
@@ -45,9 +46,8 @@ enum LightsailError: LocalizedError {
     case notAllowed(String), api(String)
     var errorDescription: String? {
         switch self {
-        case .notAllowed(let action):
-            let perm = action == "stop" ? "StopInstance" : action == "start" ? "StartInstance" : "GetInstance"
-            return String(localized: "This AWS key isn't allowed to \(action). Add lightsail:\(perm) to its policy (VPN Sync on the Mac: Settings → Lightsail).")
+        case .notAllowed(let perm):
+            return String(localized: "This AWS key isn't allowed to call lightsail:\(perm). Add it to the key's policy (VPN Sync on the Mac: Settings → Lightsail).")
         case .api(let m): return "Lightsail: \(m)"
         }
     }
@@ -69,9 +69,10 @@ struct LightsailInstance: Equatable {
 }
 
 enum Lightsail {
-    private static func call(_ action: String, instance: String, region: String, key: AWSKey) async throws -> [String: Any] {
+    private static func call(_ action: String, instance: String, region: String, key: AWSKey,
+                             extra: [String: Any] = [:]) async throws -> [String: Any] {
         let host = "lightsail.\(region).amazonaws.com"
-        let body = try JSONSerialization.data(withJSONObject: ["instanceName": instance])
+        let body = try JSONSerialization.data(withJSONObject: extra.merging(["instanceName": instance]) { a, _ in a })
         let date = SigV4.amzDate()
         let headers = ["content-type": "application/x-amz-json-1.1", "host": host, "x-amz-date": date,
                        "x-amz-target": "Lightsail_20161128.\(action)"]
@@ -86,7 +87,7 @@ enum Lightsail {
         if let code = (resp as? HTTPURLResponse)?.statusCode, code >= 300 {
             let msg = (json["message"] ?? json["Message"]) as? String ?? "HTTP \(code)"
             if msg.contains("not authorized") || (json["__type"] as? String ?? "").contains("AccessDenied") {
-                throw LightsailError.notAllowed(action == "StopInstance" ? "stop" : action == "StartInstance" ? "start" : "read")
+                throw LightsailError.notAllowed(action)
             }
             throw LightsailError.api(msg)
         }
@@ -106,5 +107,54 @@ enum Lightsail {
 
     static func start(_ name: String, region: String, key: AWSKey) async throws {
         _ = try await call("StartInstance", instance: name, region: region, key: key)
+    }
+
+    // MARK: firewall
+
+    /// The open rules of the instance's public firewall.
+    static func portRules(_ name: String, region: String, key: AWSKey) async throws -> [PortRule] {
+        let j = try await call("GetInstancePortStates", instance: name, region: region, key: key)
+        return (j["portStates"] as? [[String: Any]] ?? []).compactMap { r in
+            guard (r["state"] as? String ?? "open") == "open", let f = r["fromPort"] as? Int, let t = r["toPort"] as? Int,
+                  let p = r["protocol"] as? String else { return nil }
+            return PortRule(fromPort: f, toPort: t, protocol: p, cidrs: r["cidrs"] as? [String],
+                            ipv6Cidrs: r["ipv6Cidrs"] as? [String], cidrListAliases: r["cidrListAliases"] as? [String])
+        }
+    }
+
+    static func open(_ rule: PortRule, instance: String, region: String, key: AWSKey) async throws {
+        _ = try await call("OpenInstancePublicPorts", instance: instance, region: region, key: key, extra: ["portInfo": rule.json])
+    }
+
+    /// Removes the whole rule (every source).
+    static func close(_ rule: PortRule, instance: String, region: String, key: AWSKey) async throws {
+        _ = try await call("CloseInstancePublicPorts", instance: instance, region: region, key: key,
+                           extra: ["portInfo": ["fromPort": rule.fromPort, "toPort": rule.toPort, "protocol": rule.protocol]])
+    }
+}
+
+/// One rule of a Lightsail instance's firewall.
+struct PortRule: Codable, Hashable {
+    var fromPort: Int
+    var toPort: Int
+    var `protocol`: String           // tcp, udp, all, icmp
+    var cidrs: [String]?
+    var ipv6Cidrs: [String]?
+    var cidrListAliases: [String]?
+
+    var label: String { "\(`protocol`.uppercased()) \(fromPort == toPort ? String(fromPort) : "\(fromPort)-\(toPort)")" }
+    var json: [String: Any] {
+        var d: [String: Any] = ["fromPort": fromPort, "toPort": toPort, "protocol": `protocol`]
+        if let cidrs, !cidrs.isEmpty { d["cidrs"] = cidrs }
+        if let ipv6Cidrs, !ipv6Cidrs.isEmpty { d["ipv6Cidrs"] = ipv6Cidrs }
+        if let cidrListAliases, !cidrListAliases.isEmpty { d["cidrListAliases"] = cidrListAliases }
+        return d
+    }
+    func isExactly(_ p: ServerPort) -> Bool { `protocol` == p.proto && fromPort == p.port && toPort == p.port }
+    func covers(_ p: ServerPort) -> Bool { (`protocol` == p.proto || `protocol` == "all") && fromPort <= p.port && p.port <= toPort }
+    /// A rule for one port, open to the same kinds of sources as `others` (everyone, IPv4 and IPv6).
+    static func opening(_ p: ServerPort, like others: [PortRule]) -> PortRule {
+        let v6 = others.contains { !($0.ipv6Cidrs ?? []).isEmpty }
+        return PortRule(fromPort: p.port, toPort: p.port, protocol: p.proto, cidrs: ["0.0.0.0/0"], ipv6Cidrs: v6 ? ["::/0"] : nil)
     }
 }

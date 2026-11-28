@@ -23,7 +23,8 @@ the phone to a VPN stays in the WireGuard / OpenVPN apps and iOS Settings (IKEv2
     day (vnstat), data per device this month (server-side counts).
   - Activity: connects/disconnects and limit events while the app is open.
   - Toolbar: Add Device; services menu (start/stop/restart each VPN, reboot, with confirmation;
-    Stop/Start Server on Lightsail when the export included the Lightsail key).
+    Stop/Start Server on Lightsail when the export included the Lightsail key; stopping closes the
+    server's VPN ports in the Lightsail firewall and starting opens them again, SSH stays open).
 - **Settings:** import servers, Face ID lock (on by default), warning level, remove a server.
 
 Not in v1: background notifications (iOS gives no background time for a live SSH stream),

@@ -229,12 +229,17 @@ final class Store: ObservableObject {
 
     /// Stops or starts the server's Lightsail instance; starting waits until it's running, then
     /// reconnects the live view.
-    func power(_ name: String, start: Bool) async throws {
-        guard let s = server(name), let region = s.region, let key = awsKey else { return }
+    /// Stopping closes the server's VPN ports in the Lightsail firewall (SSH stays open) and
+    /// starting opens them again. Returns what happened in the firewall, as sentences.
+    @discardableResult
+    func power(_ name: String, start: Bool) async throws -> [String] {
+        guard let s = server(name), let region = s.region, let key = awsKey else { return [] }
         let inst = s.instance ?? name
+        var notes: [String] = []
         if start {
             try await Lightsail.start(inst, region: region, key: key)
             instances[name] = LightsailInstance(state: "pending", ip: nil, staticIP: instances[name]?.staticIP ?? false)
+            notes = await reopenPorts(name, instance: inst, region: region, key: key)
             for _ in 0..<40 {
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 if let i = await refreshInstance(name), i.isRunning { break }
@@ -242,7 +247,9 @@ final class Store: ObservableObject {
             try? await Task.sleep(nanoseconds: 20_000_000_000)    // the VPNs and SSH need a moment
             live[name]?.restart()
         } else {
+            let plan = await portsToClose(name, instance: inst, region: region, key: key, notes: &notes)
             try await Lightsail.stop(inst, region: region, key: key)
+            notes += await closePorts(plan, name, instance: inst, region: region, key: key)
             instances[name] = LightsailInstance(state: "stopping", ip: nil, staticIP: instances[name]?.staticIP ?? false)
             live[name]?.stop()
             disconnect(name)
@@ -253,6 +260,79 @@ final class Store: ObservableObject {
                 }
             }
         }
+        return notes
+    }
+
+    // MARK: Lightsail firewall
+
+    private func closedKey(_ name: String) -> String { "closedPorts.\(name)" }
+    /// The rules the last stop closed (on this phone), to open again on start.
+    private func closedRules(_ name: String) -> [PortRule] {
+        guard let d = UserDefaults.standard.data(forKey: closedKey(name)) else { return [] }
+        return (try? JSONDecoder().decode([PortRule].self, from: d)) ?? []
+    }
+    private func saveClosed(_ rules: [PortRule], _ name: String) {
+        if rules.isEmpty { UserDefaults.standard.removeObject(forKey: closedKey(name)) }
+        else if let d = try? JSONEncoder().encode(rules) { UserDefaults.standard.set(d, forKey: closedKey(name)) }
+    }
+
+    /// The server's VPN ports (not SSH): live, else the last ones it reported to this phone.
+    private func vpnPorts(_ name: String) -> [ServerPort] {
+        let p = live[name]?.ports ?? []
+        return (p.isEmpty ? ServerLive.cachedPorts(name) : p).filter { $0.vpn != "ssh" }
+    }
+
+    /// The firewall rules for exactly one VPN port each; rules wider than that are left alone.
+    private func portsToClose(_ name: String, instance: String, region: String, key: AWSKey, notes: inout [String]) async -> [PortRule] {
+        let ports = vpnPorts(name)
+        guard !ports.isEmpty else { return [] }
+        do {
+            let rules = try await Lightsail.portRules(instance, region: region, key: key)
+            var plan: [PortRule] = []
+            for p in ports { if let r = rules.first(where: { $0.isExactly(p) }), !plan.contains(r) { plan.append(r) } }
+            return plan
+        } catch {
+            notes.append(String(localized: "The Lightsail firewall is left as it is: \(error.localizedDescription)"))
+            return []
+        }
+    }
+
+    private func closePorts(_ plan: [PortRule], _ name: String, instance: String, region: String, key: AWSKey) async -> [String] {
+        guard !plan.isEmpty else { return [] }
+        // remembered first: a rule closed but not remembered would stay closed after a start
+        let saved = closedRules(name)
+        saveClosed(saved + plan.filter { !saved.contains($0) }, name)
+        var closed: [String] = [], failed: [String] = []
+        for r in plan {
+            do { try await Lightsail.close(r, instance: instance, region: region, key: key); closed.append(r.label) }
+            catch { failed.append(r.label) }
+        }
+        var notes: [String] = []
+        if !closed.isEmpty { notes.append(String(localized: "Its VPN ports are closed in the Lightsail firewall until it starts again: \(closed.joined(separator: ", ")). SSH stays open.")) }
+        if !failed.isEmpty { notes.append(String(localized: "Couldn't close \(failed.joined(separator: ", ")) in the Lightsail firewall. Check the key's policy (VPN Sync on the Mac: Settings → Lightsail).")) }
+        return notes
+    }
+
+    /// Opens what the last stop closed; stopped elsewhere (the Mac, the Lightsail console), it
+    /// opens the ports the server last reported instead.
+    private func reopenPorts(_ name: String, instance: String, region: String, key: AWSKey) async -> [String] {
+        let saved = closedRules(name)
+        guard let rules = try? await Lightsail.portRules(instance, region: region, key: key) else {
+            return saved.isEmpty ? [] : [String(localized: "Couldn't open \(saved.map(\.label).joined(separator: ", ")) in the Lightsail firewall. Open them on the instance's Networking tab, or check the key's policy (VPN Sync on the Mac: Settings → Lightsail).")]
+        }
+        let want = saved.isEmpty
+            ? vpnPorts(name).filter { p in !rules.contains { $0.covers(p) } }.map { PortRule.opening($0, like: rules) }
+            : saved.filter { r in !rules.contains { $0.fromPort == r.fromPort && $0.toPort == r.toPort && $0.protocol == r.protocol } }
+        var opened: [String] = [], left: [PortRule] = []
+        for r in want {
+            do { try await Lightsail.open(r, instance: instance, region: region, key: key); opened.append(r.label) }
+            catch { left.append(r) }
+        }
+        if !saved.isEmpty { saveClosed(saved.filter { left.contains($0) }, name) }
+        var notes: [String] = []
+        if !opened.isEmpty { notes.append(String(localized: "Its VPN ports are open again in the Lightsail firewall: \(opened.joined(separator: ", ")).")) }
+        if !left.isEmpty { notes.append(String(localized: "Couldn't open \(left.map(\.label).joined(separator: ", ")) in the Lightsail firewall. Open them on the instance's Networking tab, or check the key's policy (VPN Sync on the Mac: Settings → Lightsail).")) }
+        return notes
     }
 
     func sudo(_ name: String) -> String { server(name)?.user == "root" ? "" : "sudo -n " }
@@ -292,7 +372,8 @@ final class Store: ObservableObject {
 
     func show(_ message: String) {
         toast = message
-        Task { try? await Task.sleep(nanoseconds: 3_500_000_000); if toast == message { toast = nil } }
+        let seconds = max(3.5, Double(message.count) / 18)     // long enough to read
+        Task { try? await Task.sleep(nanoseconds: UInt64(seconds * 1e9)); if toast == message { toast = nil } }
     }
 
     // MARK: everything at once

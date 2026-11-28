@@ -993,7 +993,8 @@ struct ContentView: View {
             let ip = st?.staticIP == true
                 ? String(localized: "Its static IP stays the same.")
                 : String(localized: "Without a static IP it gets a new address when it starts: VPN Sync finds it and updates the profiles, but phones and TVs need their WireGuard and IKEv2 profiles again. A Lightsail static IP avoids this.")
-            return String(localized: "The Lightsail instance is shut down: every device is disconnected, and nothing reconnects until you start it again (Power → Start Server). \(ip) \(mac)")
+            let fw = String(localized: "Its VPN ports are closed in the Lightsail firewall while it's stopped and opened again when you start it; SSH stays open.")
+            return String(localized: "The Lightsail instance is shut down: every device is disconnected, and nothing reconnects until you start it again (Power → Start Server). \(ip) \(mac)") + " " + fw
         }
         switch a.action {
         case "reboot":

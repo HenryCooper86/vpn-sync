@@ -63,7 +63,8 @@ ikev2_collect() {
 # "ipsec showstates" (#2: "ikev2-cp"[1] 203.0.113.5:4500 established IKE SA; …), by connection instance.
 ikev2_sas() {
 	have_ikev2 && command -v ipsec >/dev/null || return 0
-	{ ipsec showstates 2>/dev/null | sed 's/^/STATE /'; ipsec trafficstatus 2>/dev/null; } | awk -v q="'" '
+	# both fail while IKEv2 is stopped: that's no tunnels, not an error
+	{ { ipsec showstates 2>/dev/null || true; } | sed 's/^/STATE /'; ipsec trafficstatus 2>/dev/null || true; } | awk -v q="'" '
 		function val(key,  r) { r = key "=[^, " q "]+"; if (match($0, r)) return substr($0, RSTART + length(key) + 1, RLENGTH - length(key) - 1); return "" }
 		function inst(  r) { if (match($0, /"ikev2-cp"\[[0-9]+\]/)) return substr($0, RSTART, RLENGTH); return "" }
 		/^STATE / { k = inst(); if (k != "" && !(k in port) && match($0, /\] [^ ]+:[0-9]+ /)) {

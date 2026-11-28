@@ -54,9 +54,15 @@
 #                                         (asks, or reads "ID<newline>SECRET" from stdin)
 #   vpn-sync aws status | remove | ip <server>
 #   vpn-sync aws state <server>           running, stopped, stopping or pending (and the IP)
-#   vpn-sync aws stop <server>            stop the Lightsail instance (every device disconnects)
-#   vpn-sync aws start <server>           start it again; add --wait to wait until it's running
-#       stop/start need a key allowed lightsail:StopInstance and lightsail:StartInstance; a
+#   vpn-sync aws stop <server>            stop the Lightsail instance (every device disconnects) and
+#                                         close its VPN ports in the Lightsail firewall (SSH stays
+#                                         open); --keep-ports leaves the firewall alone, --dry-run
+#                                         only says which rules it would close
+#   vpn-sync aws start <server>           start it again and reopen the ports the stop closed; add
+#                                         --wait to wait until it's running (stopped elsewhere, it
+#                                         then opens the ports the server listens on)
+#       stop/start need a key allowed lightsail:StopInstance and lightsail:StartInstance, and for
+#       the firewall GetInstancePortStates, OpenInstancePublicPorts and CloseInstancePublicPorts; a
 #       server without a static IP comes back with a new IP (VPN Sync finds it and resyncs)
 #
 # Servers:
@@ -96,6 +102,7 @@ info() { printf '%s\n' "$*"; }
 slug() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
 
 STAGES=""
+VIA_MODE="" VIA_ADDR=""
 cleanup() { local s; for s in $STAGES; do rm -rf "$s"; done; }
 trap cleanup EXIT
 mkdir -p "$CONFIG_DIR" "$KEYS_DIR"; chmod 700 "$CONFIG_DIR" "$KEYS_DIR"
@@ -306,17 +313,36 @@ aws_cmd() {
 			echo "IP=$ip"
 			;;
 		state|stop|start)
-			local cmd="$1" name="${2:-}" wait=0 out state ip
-			[ -n "$name" ] || die "usage: vpn-sync aws $cmd <server>"
-			[ "${3:-}" = --wait ] && wait=1
+			local cmd="$1" name="${2:-}" wait=0 keep=0 dry=0 out state ip a
+			[ -n "$name" ] || die "usage: vpn-sync aws $cmd <server> [--wait] [--keep-ports] [--dry-run]"
+			shift 2
+			for a in "$@"; do
+				case "$a" in
+					--wait) wait=1 ;;
+					--keep-ports) keep=1 ;;
+					--dry-run) dry=1 ;;
+					*) die "unknown option: $a" ;;
+				esac
+			done
 			load_server "$name"
 			[ -n "$S_REGION" ] || die "$name isn't a Lightsail server (no region set: vpn-sync server edit $name --region …)"
 			local body; body=$(printf '{"instanceName":"%s"}' "$S_INSTANCE")
 			case "$cmd" in
-				stop) lightsail_call "$S_REGION" StopInstance "$body" >/dev/null || die "stop failed"
-					info "stopping $name (Lightsail instance $S_INSTANCE)"; echo "REQUESTED=stop" ;;
-				start) lightsail_call "$S_REGION" StartInstance "$body" >/dev/null || die "start failed"
-					info "starting $name (Lightsail instance $S_INSTANCE)"; echo "REQUESTED=start" ;;
+				stop)
+					local plan=""
+					[ $keep -eq 1 ] || plan=$(fw_stop_plan)
+					if [ $dry -eq 1 ]; then
+						[ -n "$plan" ] && info "would close in the Lightsail firewall: $(fw_plan_labels "$plan")" || info "no VPN ports to close"
+						return 0
+					fi
+					lightsail_call "$S_REGION" StopInstance "$body" >/dev/null || die "stop failed"
+					info "stopping $name (Lightsail instance $S_INSTANCE)"; echo "REQUESTED=stop"
+					[ -n "$plan" ] && fw_close_plan "$plan" ;;
+				start)
+					[ $dry -eq 1 ] && die "--dry-run is only for stop"
+					lightsail_call "$S_REGION" StartInstance "$body" >/dev/null || die "start failed"
+					info "starting $name (Lightsail instance $S_INSTANCE)"; echo "REQUESTED=start"
+					[ $keep -eq 1 ] || fw_reopen_saved ;;
 			esac
 			local tries=0
 			while :; do
@@ -329,9 +355,16 @@ aws_cmd() {
 			echo "STATE=$state"
 			[[ "$ip" =~ $IPV4_RE ]] && echo "IP=$ip"
 			if printf '%s' "$out" | plutil -extract instance.isStaticIp raw -o - - 2>/dev/null | grep -q true; then echo "STATIC_IP=yes"; else echo "STATIC_IP=no"; fi
+			# stopped somewhere else (the iPhone, the Lightsail console): once it boots, allow the
+			# ports it listens on
+			if [ "$cmd" = start ] && [ $wait -eq 1 ] && [ $keep -eq 0 ] && [ "$state" = running ] && [ -z "$FW_REOPENED" ]; then
+				local t
+				for t in 1 2 3 4 5 6 7 8 9; do connect "" >/dev/null 2>&1 && break; sleep 10; done
+				[ -n "$VIA_MODE" ] && fw_open_all
+			fi
 			return 0
 			;;
-		*) die "usage: vpn-sync aws set | status | remove | ip | state | stop | start <server>" ;;
+		*) die "usage: vpn-sync aws set | status | remove | ip | state | stop | start <server> [--wait] [--keep-ports]" ;;
 	esac
 }
 
@@ -854,7 +887,7 @@ states = json.load(sys.stdin).get("portStates", [])
 proto, port = sys.argv[1], int(sys.argv[2])
 def info(r):
     d = {"fromPort": r["fromPort"], "toPort": r["toPort"], "protocol": r["protocol"]}
-    for k in ("cidrs", "ipv6Cidrs"):
+    for k in ("cidrs", "ipv6Cidrs", "cidrListAliases"):
         if r.get(k): d[k] = r[k]
     return d
 for r in states:
@@ -882,6 +915,7 @@ fw_open_all() {
 	snap=$(remote "$(sudo_prefix)/usr/local/sbin/vpn-status" </dev/null 2>/dev/null) || return 0
 	local want; want=$(awk -F'\t' '$1=="PORT" && $2!="ssh" {print $2, $3, $4}' <<< "$snap")
 	[ -n "$want" ] || return 0
+	printf '%s\n' "$want" > "$CONFIG_DIR/$S_NAME.ports"
 	if [ -z "$(aws_key_id)" ] && ! { command -v aws >/dev/null 2>&1 && aws configure get aws_access_key_id >/dev/null 2>&1; }; then
 		info "  Lightsail firewall: no key saved; allow these on the instance's Networking tab: $(awk '{printf "%s%s %s", (NR>1?", ":""), toupper($2), $3}' <<< "$want")"
 		return 0
@@ -905,6 +939,94 @@ fw_open_all() {
 fw_states() { lightsail_call "$S_REGION" GetInstancePortStates "$(printf '{"instanceName":"%s"}' "$S_INSTANCE")"; }
 fw_change() { # fw_change Open|Close PORTINFO_JSON
 	lightsail_call "$S_REGION" "$1InstancePublicPorts" "$(printf '{"instanceName":"%s","portInfo":%s}' "$S_INSTANCE" "$2")" >/dev/null
+}
+
+# fw_vpn_ports: "vpn proto port" for each VPN port (not SSH) of the loaded server: from the server
+# when it answers, else from the last time it did ($CONFIG_DIR/NAME.ports).
+fw_vpn_ports() {
+	local cache="$CONFIG_DIR/$S_NAME.ports" snap="" want=""
+	if [ -n "$VIA_MODE" ] || connect "" >/dev/null 2>&1; then
+		snap=$(remote "$(sudo_prefix)/usr/local/sbin/vpn-status" </dev/null 2>/dev/null) || snap=""
+		want=$(awk -F'\t' '$1=="PORT" && $2!="ssh" {print $2, $3, $4}' <<< "$snap")
+	fi
+	if [ -n "$want" ]; then printf '%s\n' "$want" > "$cache"
+	elif [ -f "$cache" ]; then want=$(cat "$cache"); fi
+	printf '%s' "$want"
+}
+
+# fw_stop_plan: the Lightsail firewall rules to close when the server stops, one "vpn<TAB>portInfo"
+# a line: each rule for exactly one VPN port. SSH stays open, so the apps can reach the server
+# once it's started again. Rules wider than one port are left alone. Notes go to stdout as info.
+fw_stop_plan() {
+	local want states vpn proto port rule plan=""
+	want=$(fw_vpn_ports)
+	if [ -z "$want" ]; then info "  ! couldn't tell which ports $S_NAME's VPNs use; the Lightsail firewall is left as it is" >&2; return 0; fi
+	if ! states=$(fw_states 2>&1); then
+		info "  ! Lightsail firewall left open: ${states#lightsail: }" >&2; return 0
+	fi
+	while read -r vpn proto port; do
+		rule=$(fw_rule "$states" "$proto" "$port")
+		case "$rule" in
+			exact*) plan="$plan$vpn	${rule#exact }"$'\n' ;;
+			covered) info "  Lightsail firewall: $(echo "$proto" | tr a-z A-Z) $port is part of a wider rule; left open" >&2 ;;
+		esac
+	done <<< "$want"
+	printf '%s' "$plan" | awk '!seen[$0]++'
+}
+
+fw_vpn_label() { case "$1" in openvpn) echo OpenVPN ;; wireguard) echo WireGuard ;; ipsec) echo IKEv2 ;; *) echo "$1" ;; esac; }
+
+# fw_plan_labels PLAN -> "TCP 443 (OpenVPN), UDP 443 (WireGuard)"
+fw_plan_labels() {
+	local vpn json out=""
+	while IFS=$'\t' read -r vpn json; do
+		[ -n "$json" ] || continue
+		out="$out${out:+, }$(fw_port_label "$json") ($(fw_vpn_label "$vpn"))"
+	done <<< "$1"
+	printf '%s' "$out"
+}
+fw_port_label() { # portInfo JSON -> "UDP 443"
+	/usr/bin/python3 -c 'import json,sys; r=json.loads(sys.argv[1]); p=r["fromPort"], r["toPort"]; print(r["protocol"].upper(), p[0] if p[0]==p[1] else "%d-%d" % p)' "$1"
+}
+
+# fw_close_plan PLAN: close each rule and remember it ($CONFIG_DIR/NAME.closed-ports) for start
+fw_close_plan() {
+	local saved="$CONFIG_DIR/$S_NAME.closed-ports" vpn json closed="" failed="" err
+	while IFS=$'\t' read -r vpn json; do
+		[ -n "$json" ] || continue
+		# remembered first: a rule closed but not remembered would stay closed after a start
+		grep -qxF "$vpn	$json" "$saved" 2>/dev/null || printf '%s\t%s\n' "$vpn" "$json" >> "$saved"
+		local only; only=$(/usr/bin/python3 -c 'import json,sys; r=json.loads(sys.argv[1]); print(json.dumps({k: r[k] for k in ("fromPort","toPort","protocol")}))' "$json")
+		if err=$(fw_change Close "$only" 2>&1); then closed="$closed${closed:+, }$(fw_port_label "$json")"
+		else failed="$failed${failed:+, }$(fw_port_label "$json")"; info "  ! ${err#lightsail: }"; fi
+	done <<< "$1"
+	chmod 600 "$saved" 2>/dev/null || true
+	[ -n "$closed" ] && { info "  Lightsail firewall: closed $closed (SSH stays open; starting $S_NAME opens them again)"; echo "PORTS_CLOSED=$closed"; }
+	[ -n "$failed" ] && { info "  ! couldn't close $failed in the Lightsail firewall"; echo "PORTS_FAILED=$failed"; }
+	return 0
+}
+
+# fw_reopen_saved: open the rules the last stop closed. Sets FW_REOPENED when there were any.
+FW_REOPENED=""
+fw_reopen_saved() {
+	local saved="$CONFIG_DIR/$S_NAME.closed-ports" vpn json opened="" failed="" left="" err states rule
+	[ -s "$saved" ] || return 0
+	FW_REOPENED=1
+	states=$(fw_states 2>/dev/null || true)
+	while IFS=$'\t' read -r vpn json; do
+		[ -n "$json" ] || continue
+		if [ -n "$states" ]; then
+			read -r _ p n < <(/usr/bin/python3 -c 'import json,sys; r=json.loads(sys.argv[1]); print("x", r["protocol"], r["fromPort"])' "$json")
+			rule=$(fw_rule "$states" "$p" "$n")
+			case "$rule" in exact*|covered) opened="$opened${opened:+, }$(fw_port_label "$json")"; continue ;; esac
+		fi
+		if err=$(fw_change Open "$json" 2>&1); then opened="$opened${opened:+, }$(fw_port_label "$json")"
+		else failed="$failed${failed:+, }$(fw_port_label "$json")"; left="$left$vpn	$json"$'\n'; info "  ! ${err#lightsail: }"; fi
+	done < "$saved"
+	if [ -n "$left" ]; then printf '%s' "$left" > "$saved"; else rm -f "$saved"; fi
+	[ -n "$opened" ] && { info "  Lightsail firewall: opened $opened again"; echo "PORTS_OPENED=$opened"; }
+	[ -n "$failed" ] && { info "  ! couldn't open $failed in the Lightsail firewall; open them on the instance's Networking tab"; echo "PORTS_FAILED=$failed"; }
+	return 0
 }
 
 # ports_set SERVER openvpn|wireguard PORT [tcp|udp] [--no-firewall]

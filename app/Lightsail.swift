@@ -1,7 +1,9 @@
 // Stopping and starting Lightsail servers (vpn-sync aws state | stop | start). Needs a key that
-// may call lightsail:StopInstance and lightsail:StartInstance (Settings → Lightsail; Change Ports
-// also needs GetInstancePortStates, OpenInstancePublicPorts and CloseInstancePublicPorts). A server
-// without a static IP comes back with a new address: VPN Sync looks it up and resyncs.
+// may call lightsail:StopInstance and lightsail:StartInstance (Settings → Lightsail). Stopping also
+// closes the server's VPN ports in the Lightsail firewall and starting opens them again (SSH stays
+// open), which needs GetInstancePortStates, OpenInstancePublicPorts and CloseInstancePublicPorts,
+// the same as Change Ports. A server without a static IP comes back with a new address: VPN Sync
+// looks it up and resyncs.
 import SwiftUI
 
 struct InstanceState: Equatable {
@@ -37,6 +39,19 @@ extension Model {
         return state
     }
 
+    /// What `aws stop` / `aws start` did in the Lightsail firewall, as notices.
+    private func portNotices(_ out: String, start: Bool) -> [String] {
+        let kv = parseKV(out)
+        var n: [String] = []
+        if let c = kv["PORTS_CLOSED"] { n.append(String(localized: "Its VPN ports are closed in the Lightsail firewall until it starts again: \(c). SSH stays open.")) }
+        if let o = kv["PORTS_OPENED"] { n.append(String(localized: "Its VPN ports are open again in the Lightsail firewall: \(o).")) }
+        if let f = kv["PORTS_FAILED"] {
+            n.append(start ? String(localized: "Couldn't open \(f) in the Lightsail firewall. Open them on the instance's Networking tab, or check the key's policy in Settings → Lightsail.")
+                           : String(localized: "Couldn't close \(f) in the Lightsail firewall. Check the key's policy in Settings → Lightsail."))
+        }
+        return n
+    }
+
     /// Stops or starts a Lightsail server. Starting waits until it's running and reachable again,
     /// then resyncs (a new IP is found and the profiles updated) and reconnects live monitoring.
     func powerServer(_ s: String, start: Bool) async {
@@ -49,7 +64,8 @@ extension Model {
                 return
             }
             await refreshInstanceState(s)
-            notices = [String(localized: "\(s) is running again. Waiting for it to finish booting…")]
+            let fw = portNotices(out, start: true)
+            notices = [String(localized: "\(s) is running again. Waiting for it to finish booting…")] + fw
             // the VPNs need a minute after the instance reports running
             for _ in 0..<18 {
                 let (c, _) = await runCLI(["--check", s], quiet: true)
@@ -60,7 +76,7 @@ extension Model {
             await recover(s)
             notices = [instanceStates[s]?.staticIP == false
                 ? String(localized: "\(s) is back. If its IP changed, the profiles on the Desktop are updated; phones and TVs need them again.")
-                : String(localized: "\(s) is back.")]
+                : String(localized: "\(s) is back.")] + fw
         } else {
             let (code, out) = await cli(["aws", "stop", s], label: String(localized: "Stopping \(s)…"))
             guard code == 0 else {
@@ -68,7 +84,7 @@ extension Model {
                 return
             }
             instanceStates[s] = InstanceState(state: "stopping", ip: nil, staticIP: instanceStates[s]?.staticIP ?? false)
-            notices = [String(localized: "\(s) is stopping. Every device is disconnected until you start it again.")]
+            notices = [String(localized: "\(s) is stopping. Every device is disconnected until you start it again.")] + portNotices(out, start: false)
             status = .upToDate
             // follow it until Lightsail says stopped
             Task { @MainActor in

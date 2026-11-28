@@ -39,7 +39,7 @@ It can also set up a fresh server for you.
 | **Usage limits** | A daily or monthly limit per device that alerts you at 80% and 100%, or also pauses it. Pause or resume any device's internet by hand; it stays connected and nothing is revoked. |
 | **Devices and profiles** | Add, batch add, remove and batch remove devices on every VPN at once. WireGuard QR codes for phones and TVs, IKEv2 profiles that install natively on iPhone, Mac, Android and Windows. **Check** compares the server's profiles with your copies and lists what a sync would add, remove or update. |
 | **IP changes handled** | Each server rewrites its own profiles when its address changes; the Mac pulls fresh copies, fixes OpenVPN Connect and, with a Lightsail key, finds a stopped-and-started server's new IP on its own. |
-| **Start and stop servers** | Stop a Lightsail server you don't need and start it again from the Mac, the menu bar or the iPhone; VPN Sync shows it as stopped instead of unreachable, and after a start it finds the new IP and resyncs. |
+| **Start and stop servers** | Stop a Lightsail server you don't need and start it again from the Mac, the menu bar or the iPhone; VPN Sync shows it as stopped instead of unreachable, and after a start it finds the new IP and resyncs. Stopping also closes its VPN ports in the Lightsail firewall (SSH stays open) and starting opens them again. |
 | **Install or adopt** | Install OpenVPN and/or WireGuard (Nyr) and optionally IPsec/IKEv2 (hwdsl2, IKEv2-only) with your choice of ports and DNS, or keep what's already there. |
 | **iPhone app** | The same servers on your phone over SSH, without the Mac: live view, ports, limits, devices and their profiles, services, stop and start. Check Profiles says whether the profiles use the server's current IP (and updates them if not) and which devices were added, removed or given new profiles since the last check. |
 | **Quick from far away** | One SSH connection per server is kept open and shared, so a check, sync or usage report takes about a second even to a server on another continent, and the live view starts in under one. |
@@ -120,7 +120,8 @@ Mac installs the tools; nothing to do on the server yourself.
 
 Settings (the gear, or ⌘,) also has notifications, usage-limit alerts and the warning level,
 the appearance, and a Lightsail key: with it VPN Sync finds a server's new IP after a stop and
-start, **Power → Stop Server / Start Server** work, and installing or changing ports opens them in
+start, **Power → Stop Server / Start Server** work (a stopped server's VPN ports are closed in the
+Lightsail firewall until it starts again), and installing or changing ports opens them in
 the Lightsail firewall (the policy it shows allows only reading, stopping and starting instances
 and opening or closing their ports). To use them on the iPhone, tick **Include the Lightsail key**
 when exporting.

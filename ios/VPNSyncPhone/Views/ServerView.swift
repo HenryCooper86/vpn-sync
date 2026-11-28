@@ -328,9 +328,10 @@ struct ServerView: View {
 
     private var confirmMessage: String {
         if confirm?.vpn == "instance" {
-            return store.instances[name]?.staticIP == true
+            let fw = String(localized: "Its VPN ports are closed in the Lightsail firewall while it's stopped and opened again when you start it; SSH stays open.")
+            return (store.instances[name]?.staticIP == true
                 ? String(localized: "The Lightsail instance shuts down: every device is disconnected until you start it again.")
-                : String(localized: "The Lightsail instance shuts down: every device is disconnected until you start it again. Without a static IP it gets a new address when it starts; phones and TVs then need their WireGuard and IKEv2 profiles again.")
+                : String(localized: "The Lightsail instance shuts down: every device is disconnected until you start it again. Without a static IP it gets a new address when it starts; phones and TVs then need their WireGuard and IKEv2 profiles again.")) + " " + fw
         }
         return confirm?.action == "reboot" ? String(localized: "Every device is disconnected for about a minute.") : String(localized: "Devices on it reconnect on their own.")
     }
@@ -436,8 +437,8 @@ struct ServerView: View {
             Task {
                 defer { busy = nil }
                 do {
-                    try await store.power(name, start: a.action == "start")
-                    store.show(a.action == "start" ? String(localized: "\(name) is running again.") : String(localized: "\(name) is stopping."))
+                    let notes = try await store.power(name, start: a.action == "start")
+                    store.show(([a.action == "start" ? String(localized: "\(name) is running again.") : String(localized: "\(name) is stopping.")] + notes).joined(separator: " "))
                 } catch { store.show(error.localizedDescription) }
             }
             return

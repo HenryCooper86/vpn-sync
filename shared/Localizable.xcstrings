@@ -2701,6 +2701,26 @@
         }
       }
     },
+    "Couldn't close %@ in the Lightsail firewall. Check the key's policy (VPN Sync on the Mac: Settings → Lightsail).": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法在 Lightsail 防火墙中关闭 %@。请检查密钥的策略（在 Mac 上的 VPN Sync：设置 → Lightsail）。"
+          }
+        }
+      }
+    },
+    "Couldn't close %@ in the Lightsail firewall. Check the key's policy in Settings → Lightsail.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法在 Lightsail 防火墙中关闭 %@。请在“设置 → Lightsail”中检查密钥的策略。"
+          }
+        }
+      }
+    },
     "Couldn't get %@'s profiles.": {
       "localizations": {
         "zh-Hans": {
@@ -2733,6 +2753,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "无法获取服务器的 SSH 密钥。%1$@\n请检查地址，并确认服务器防火墙已开放端口 %2$@。"
+          }
+        }
+      }
+    },
+    "Couldn't open %@ in the Lightsail firewall. Open them on the instance's Networking tab, or check the key's policy (VPN Sync on the Mac: Settings → Lightsail).": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法在 Lightsail 防火墙中开放 %@。请在实例的“网络”选项卡中开放，或检查密钥的策略（在 Mac 上的 VPN Sync：设置 → Lightsail）。"
+          }
+        }
+      }
+    },
+    "Couldn't open %@ in the Lightsail firewall. Open them on the instance's Networking tab, or check the key's policy in Settings → Lightsail.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法在 Lightsail 防火墙中开放 %@。请在实例的“网络”选项卡中开放，或在“设置 → Lightsail”中检查密钥的策略。"
           }
         }
       }
@@ -3964,6 +4004,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "它的静态 IP 保持不变。"
+          }
+        }
+      }
+    },
+    "Its VPN ports are closed in the Lightsail firewall until it starts again: %@. SSH stays open.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "它的 VPN 端口已在 Lightsail 防火墙中关闭，直到再次启动：%@。SSH 保持开放。"
+          }
+        }
+      }
+    },
+    "Its VPN ports are closed in the Lightsail firewall while it's stopped and opened again when you start it; SSH stays open.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止期间，它的 VPN 端口会在 Lightsail 防火墙中关闭，启动时再重新开放；SSH 保持开放。"
+          }
+        }
+      }
+    },
+    "Its VPN ports are open again in the Lightsail firewall: %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "它的 VPN 端口已在 Lightsail 防火墙中重新开放：%@。"
           }
         }
       }
@@ -7029,6 +7099,26 @@
         }
       }
     },
+    "The Lightsail firewall is left as it is: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lightsail 防火墙保持不变：%@"
+          }
+        }
+      }
+    },
+    "This AWS key isn't allowed to call lightsail:%@. Add it to the key's policy (VPN Sync on the Mac: Settings → Lightsail).": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个 AWS 密钥没有权限调用 lightsail:%@。请把它添加到密钥的策略中（在 Mac 上的 VPN Sync：设置 → Lightsail）。"
+          }
+        }
+      }
+    },
     "TV": {
       "localizations": {
         "zh-Hans": {
@@ -7371,22 +7461,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "它们的 OpenVPN 证书会被吊销，WireGuard 对端会被移除。它们的配置文件将失效。此操作无法撤销。"
-          }
-        }
-      }
-    },
-    "This AWS key isn't allowed to %@. Add lightsail:%@ to its policy (VPN Sync on the Mac: Settings → Lightsail).": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "new",
-            "value": "This AWS key isn't allowed to %1$@. Add lightsail:%2$@ to its policy (VPN Sync on the Mac: Settings → Lightsail)."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "这个 AWS 密钥没有权限%1$@。请在它的策略中添加 lightsail:%2$@（在 Mac 上的 VPN Sync：设置 → Lightsail）。"
           }
         }
       }

@@ -76,6 +76,15 @@ final class ServerLive: ObservableObject, Identifiable {
 
     init(name: String, store: Store) { self.name = name; self.store = store }
 
+    /// The ports the server reported last time (kept for a stop while it doesn't answer).
+    static func cachedPorts(_ name: String) -> [ServerPort] {
+        (UserDefaults.standard.stringArray(forKey: "ports.\(name)") ?? []).compactMap { l in
+            let f = l.split(separator: " ")
+            guard f.count == 3, let n = Int(f[2]) else { return nil }
+            return ServerPort(vpn: String(f[0]), proto: String(f[1]), port: n)
+        }
+    }
+
     // MARK: derived
 
     func wgOnline(_ n: String) -> Bool {
@@ -309,7 +318,10 @@ final class ServerLive: ObservableObject, Identifiable {
         link = .live
         lastSnapshot = now
         services = s.services
-        if !s.ports.isEmpty, s.ports != ports { ports = s.ports }
+        if !s.ports.isEmpty, s.ports != ports {
+            ports = s.ports
+            UserDefaults.standard.set(ports.map { "\($0.vpn) \($0.proto) \($0.port)" }, forKey: "ports.\(name)")
+        }
 
         // OpenVPN: the status file is up to a minute old; its log events are instant
         for e in s.ovpnEvents {
